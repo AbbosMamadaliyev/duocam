@@ -2,12 +2,19 @@ import SwiftUI
 
 // MARK: - Quality pill (Doc 2 §4.2)
 
-/// The top-left readout: `4K RES │ 30 FPS`.
+/// The top-left readout: `1080p │ 30 FPS`.
 ///
 /// Bound to the **negotiated** quality, never to the requested one. If the user
 /// asks for 4K and hardware cost forces 1080p, this reads 1080p immediately.
 /// Doc 3 reminder 10: *"Users forgive limitations; they do not forgive being
 /// misled about what they just recorded."*
+///
+/// Doc 2 §4.2 writes this as `4K RES │ 30 FPS`. The `RES` caption is dropped:
+/// with four circular controls beside it, the row needs 147pt of pill on a
+/// 393pt screen and has 117pt, so the resolution wrapped to two lines and
+/// truncated — `10` over `8…`. A readout that has to be decoded is worse than
+/// no caption, and `1080p` needs none; `FPS` keeps its own, since `30` alone
+/// does not read as a frame rate. Recorded as deviation D-7.
 struct QualityPill: View {
     let quality: NegotiatedQuality
     /// Dimmed and non-interactive during recording (Doc 2 §7.1 step 3).
@@ -17,7 +24,9 @@ struct QualityPill: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                valueGroup(quality.resolution.displayName, caption: "RES")
+                Text(quality.resolution.displayName)
+                    .font(DC.Font.pillLabel)
+                    .foregroundStyle(DC.Color.chromePrimary)
 
                 Rectangle()
                     .fill(DC.Color.chromeTertiary)
@@ -25,7 +34,13 @@ struct QualityPill: View {
 
                 valueGroup(quality.frameRate.displayName, caption: "FPS")
             }
-            .padding(.horizontal, 14)
+            // The readout is one line at any width. Scaling down is the
+            // backstop for the largest permitted Dynamic Type step; wrapping
+            // is never acceptable, which is what the truncation came from.
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12)
             .frame(height: DC.Size.pillHeight)
             .dcSurface(in: Capsule())
         }
@@ -34,6 +49,7 @@ struct QualityPill: View {
         .allowsHitTesting(!isDimmed)
         .dcAnimation(DC.Motion.fade, value: isDimmed)
         .dcAnimation(DC.Motion.standard, value: quality)
+        .layoutPriority(1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Quality")
         .accessibilityValue("\(quality.resolution.displayName), \(quality.frameRate.displayName) frames per second")

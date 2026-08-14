@@ -31,6 +31,14 @@ final class MultiCamCaptureEngine: CaptureEngine {
 
     private var streams: [StreamRole: Stream] = [:]
     private var sources: [StreamRole: PreviewSource] = [:]
+    /// Preview layers outlive the connection graph that feeds them.
+    ///
+    /// A rebuilt session used to hand back brand-new layers, and a fresh
+    /// `AVCaptureVideoPreviewLayer` is empty — so every lens change flashed the
+    /// whole screen black before the new lens delivered its first frame. Keeping
+    /// the layer means it holds its last frame across the switch, which is what
+    /// the system camera does and what "smooth" actually looks like.
+    private var previewLayers: [StreamRole: AVCaptureVideoPreviewLayer] = [:]
     private var rotationCoordinators: [StreamRole: AVCaptureDevice.RotationCoordinator] = [:]
     private var observers: [NSObjectProtocol] = []
     private var rotationObservations: [NSKeyValueObservation] = []
@@ -168,11 +176,23 @@ final class MultiCamCaptureEngine: CaptureEngine {
     }
 
     func apply(_ newConfiguration: CaptureConfiguration) async {
-        let needsReconfiguration = newConfiguration.requiresSessionReconfiguration(comparedTo: configuration)
+        let previous = configuration
+        let needsReconfiguration = newConfiguration.requiresSessionReconfiguration(comparedTo: previous)
         configuration = newConfiguration
 
         guard needsReconfiguration else {
+            remapRoles(for: newConfiguration)
             applyMirroring()
+            return
+        }
+
+        // One stream changed lens and the other did not: rebuild only that
+        // stream. The full path below tears down *both* streams, so switching
+        // the rear lens used to interrupt the front preview as well.
+        if status.isRunning,
+           let change = Self.singleSourceChange(from: previous, to: newConfiguration),
+           streams[change.role] != nil {
+            await switchSource(to: change.source, for: change.role)
             return
         }
 
@@ -188,6 +208,150 @@ final class MultiCamCaptureEngine: CaptureEngine {
         }
     }
 
+    /// The one role whose lens changed, when nothing else about the session did.
+    ///
+    /// A swap is deliberately *not* one of these: it changes both roles at once
+    /// and needs no session work at all — see `remapRoles(for:)`.
+    nonisolated private static func singleSourceChange(
+        from old: CaptureConfiguration,
+        to new: CaptureConfiguration
+    ) -> (role: StreamRole, source: CameraSource)? {
+        guard old.mode == new.mode,
+              old.quality.resolution == new.quality.resolution,
+              old.quality.frameRate == new.quality.frameRate
+        else { return nil }
+
+        let primaryChanged = old.primarySource != new.primarySource
+        let secondaryChanged = old.secondarySource != new.secondarySource
+
+        if primaryChanged, !secondaryChanged {
+            return (.primary, new.primarySource)
+        }
+        if secondaryChanged, !primaryChanged, let secondary = new.secondarySource {
+            return (.secondary, secondary)
+        }
+        return nil
+    }
+
+    /// Follows a stream swap in the role map.
+    ///
+    /// Doc 2 §5.6 is right that a swap needs no session reconfiguration — but
+    /// the engine still has to move the two live streams between roles, because
+    /// *the role is what decides which preview layer the screen shows and which
+    /// stream the compositor treats as the background*. Without this the swap
+    /// control changed the configuration and nothing else: both previews stayed
+    /// exactly where they were, which is how it read as a dead button.
+    private func remapRoles(for configuration: CaptureConfiguration) {
+        guard let primary = streams[.primary],
+              let secondary = streams[.secondary],
+              primary.source == configuration.secondarySource,
+              secondary.source == configuration.primarySource
+        else { return }
+
+        // Written out rather than `swap(&dict[a], &dict[b])`: two subscripts of
+        // the same dictionary are overlapping accesses, which traps.
+        let carriedSources = sources
+        let carriedLayers = previewLayers
+        let carriedCoordinators = rotationCoordinators
+
+        streams[.primary] = secondary
+        streams[.secondary] = primary
+        sources[.primary] = carriedSources[.secondary]
+        sources[.secondary] = carriedSources[.primary]
+        previewLayers[.primary] = carriedLayers[.secondary]
+        previewLayers[.secondary] = carriedLayers[.primary]
+        rotationCoordinators[.primary] = carriedCoordinators[.secondary]
+        rotationCoordinators[.secondary] = carriedCoordinators[.primary]
+
+        // The KVO closures and the sample-buffer delegates both capture a role,
+        // so both have to be re-registered against the streams' new roles.
+        observeRotation()
+        attachOutputHandlers()
+        refreshUniforms()
+    }
+
+    /// Rebuilds one stream's slice of the connection graph in place.
+    ///
+    /// Doc 3 Phase 4 task 14's requirement, honoured literally: the other
+    /// stream's input, outputs and connections are never touched, and this
+    /// stream's preview layer survives, so the switch reads as the lens
+    /// changing rather than the session restarting.
+    private func switchSource(to source: CameraSource, for role: StreamRole) async {
+        guard let previous = streams[role] else { return }
+
+        // The tier the ladder already settled on, not the requested one: this
+        // stream has to fit the budget the other stream is currently spending.
+        let resolution = negotiatedQuality.resolution
+        let frameRate = negotiatedQuality.frameRate
+        let isMultiCam = configuration.mode.isDual
+
+        do {
+            let stream: Stream = try await withCheckedThrowingContinuation { continuation in
+                sessionQueue.async { [session] in
+                    do {
+                        continuation.resume(returning: try Self.replaceStream(
+                            in: session,
+                            previous: previous,
+                            with: source,
+                            resolution: resolution,
+                            frameRate: frameRate,
+                            isMultiCam: isMultiCam
+                        ))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+            adopt(stream, for: role)
+        } catch {
+            // The targeted path is an optimisation, never the only way through:
+            // anything it cannot do — a lens the pairing cannot afford, a device
+            // that refuses its format — falls back to the full rebuild, which
+            // owns the degradation ladder.
+            Log.capture.notice(
+                "In-place lens switch to \(source.rawValue, privacy: .public) failed (\(error.localizedDescription, privacy: .public)); rebuilding session"
+            )
+            emit(.statusChanged(.configuring))
+            do {
+                apply(try await configureSession(for: configuration))
+                emit(.statusChanged(.running))
+            } catch {
+                Log.capture.error("Reconfiguration failed: \(error.localizedDescription, privacy: .public)")
+                emit(.recoverableFailure(error.localizedDescription))
+                emit(.statusChanged(.running))
+            }
+        }
+    }
+
+    /// Installs a stream rebuilt by `switchSource` without disturbing the other
+    /// role.
+    private func adopt(_ stream: Stream, for role: StreamRole) {
+        streams[role] = stream
+        previewLayers[role] = stream.previewLayer
+        if sources[role]?.layer !== stream.previewLayer {
+            sources[role] = PreviewSource(layer: stream.previewLayer)
+        }
+
+        let coordinator = AVCaptureDevice.RotationCoordinator(
+            device: stream.device,
+            previewLayer: stream.previewLayer
+        )
+        rotationCoordinators[role] = coordinator
+        streams[role]?.rotationDegrees = coordinator.videoRotationAngleForHorizonLevelCapture
+
+        applyRotation()
+        observeRotation()
+        applyMirroring()
+        attachOutputHandlers()
+        refreshUniforms()
+
+        // A device object is shared process-wide and remembers the zoom factor
+        // it was last left at. Each stop *is* a lens here, so the new one starts
+        // at its own nominal 1× — otherwise returning to 1× after 3× shows the
+        // wide lens still cropped to the telephoto's framing.
+        setZoomFactor(1, for: role, ramped: false)
+    }
+
     // MARK: Configuration
 
     /// What a successful configuration produced, carried back to the main actor.
@@ -197,8 +361,15 @@ final class MultiCamCaptureEngine: CaptureEngine {
     }
 
     private func apply(_ result: ConfigurationResult) {
+        let carried = sources
         streams = result.streams
-        sources = result.streams.mapValues { PreviewSource(layer: $0.previewLayer) }
+        previewLayers = result.streams.mapValues(\.previewLayer)
+        // A reused layer keeps its `PreviewSource` box too, so the host view
+        // sees the same layer identity and never detaches it mid-switch.
+        sources = result.streams.mapValues { stream in
+            carried.values.first { $0.layer === stream.previewLayer }
+                ?? PreviewSource(layer: stream.previewLayer)
+        }
         negotiatedQuality = result.quality
 
         rotationCoordinators = result.streams.mapValues { stream in
@@ -225,10 +396,12 @@ final class MultiCamCaptureEngine: CaptureEngine {
     private func configureSession(
         for configuration: CaptureConfiguration
     ) async throws -> ConfigurationResult {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { [previewLayers] continuation in
             sessionQueue.async { [session] in
                 do {
-                    let result = try Self.buildSession(session, for: configuration)
+                    let result = try Self.buildSession(
+                        session, for: configuration, reusing: previewLayers
+                    )
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)
@@ -243,7 +416,8 @@ final class MultiCamCaptureEngine: CaptureEngine {
     /// must not touch main-actor state, so it is given no way to.
     nonisolated private static func buildSession(
         _ session: AVCaptureMultiCamSession,
-        for configuration: CaptureConfiguration
+        for configuration: CaptureConfiguration,
+        reusing previewLayers: [StreamRole: AVCaptureVideoPreviewLayer]
     ) throws -> ConfigurationResult {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
@@ -262,90 +436,8 @@ final class MultiCamCaptureEngine: CaptureEngine {
         var built: [StreamRole: Stream] = [:]
 
         for (role, source) in roles {
-            guard let device = AVCaptureDevice.default(
-                source.deviceType, for: .video, position: source.position
-            ) else {
-                throw CaptureError.deviceUnavailable(source)
-            }
-
-            let input = try AVCaptureDeviceInput(device: device)
-
-            // Doc 1 §5.3.1 — the `WithNoConnections` variant is mandatory.
-            guard session.canAddInput(input) else {
-                throw CaptureError.connectionRejected("input for \(source.displayName)")
-            }
-            session.addInputWithNoConnections(input)
-
-            // Doc 1 §5.3.2 — preview layers need manual connections too.
-            let previewLayer = AVCaptureVideoPreviewLayer(sessionWithNoConnection: session)
-            previewLayer.videoGravity = .resizeAspectFill
-
-            guard let port = input.ports(
-                for: .video,
-                sourceDeviceType: source.deviceType,
-                sourceDevicePosition: source.position
-            ).first else {
-                throw CaptureError.connectionRejected("no video port for \(source.displayName)")
-            }
-
-            let connection = AVCaptureConnection(inputPort: port, videoPreviewLayer: previewLayer)
-            guard session.canAddConnection(connection) else {
-                throw CaptureError.connectionRejected("preview connection for \(source.displayName)")
-            }
-            session.addConnection(connection)
-
-            // A second, independent connection carries the same port to a data
-            // output. Doc 2 §15.2: the preview is *not* composited — it is two
-            // live layers for lowest latency — so the recording path needs its
-            // own tap on the stream rather than a read-back of the screen.
-            let dataOutput = AVCaptureVideoDataOutput()
-            dataOutput.alwaysDiscardsLateVideoFrames = true
-            dataOutput.videoSettings = [
-                kCVPixelBufferPixelFormatTypeKey as String:
-                    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-            ]
-
-            guard session.canAddOutput(dataOutput) else {
-                throw CaptureError.connectionRejected("data output for \(source.displayName)")
-            }
-            session.addOutputWithNoConnections(dataOutput)
-
-            let dataConnection = AVCaptureConnection(inputPorts: [port], output: dataOutput)
-            guard session.canAddConnection(dataConnection) else {
-                throw CaptureError.connectionRejected("data connection for \(source.displayName)")
-            }
-            session.addConnection(dataConnection)
-
-            // The recorded frame must be mirrored the same way the preview is,
-            // or a front-camera take plays back reversed from what was framed.
-            dataConnection.automaticallyAdjustsVideoMirroring = false
-            if dataConnection.isVideoMirroringSupported {
-                dataConnection.isVideoMirrored = false
-            }
-
-            // Doc 3 Phase 4 task 1: a photo output per stream, also manually
-            // connected. Doc 1 §5.3.7 is why nothing else is configured on it —
-            // Night Mode, Deep Fusion and ProRAW are all unavailable in
-            // multi-cam, so requesting them would fail silently.
-            let photoOutput = AVCapturePhotoOutput()
-            var attachedPhotoOutput: AVCapturePhotoOutput?
-            if session.canAddOutput(photoOutput) {
-                session.addOutputWithNoConnections(photoOutput)
-                let photoConnection = AVCaptureConnection(inputPorts: [port], output: photoOutput)
-                if session.canAddConnection(photoConnection) {
-                    session.addConnection(photoConnection)
-                    attachedPhotoOutput = photoOutput
-                }
-            }
-
-            built[role] = Stream(
-                source: source,
-                device: device,
-                input: input,
-                previewLayer: previewLayer,
-                dataOutput: dataOutput,
-                photoOutput: attachedPhotoOutput,
-                textureSize: Self.textureSize(of: device)
+            built[role] = try makeStream(
+                in: session, for: source, reusing: previewLayers[role]
             )
         }
 
@@ -358,7 +450,169 @@ final class MultiCamCaptureEngine: CaptureEngine {
             isMultiCam: configuration.mode.isDual
         )
 
+        // Only now is `activeFormat` settled, and the compositor scales by these
+        // dimensions — reading them before the ladder ran reported whatever
+        // format the device happened to be left in by the previous session.
+        for (role, stream) in built {
+            built[role]?.textureSize = textureSize(of: stream.device)
+        }
+
         return ConfigurationResult(streams: built, quality: quality)
+    }
+
+    /// Builds one stream's slice of the graph: input, preview connection, data
+    /// output, photo output.
+    ///
+    /// Shared by the full rebuild and the in-place lens switch so the two
+    /// cannot drift — a connection graph assembled two slightly different ways
+    /// is exactly the failure Doc 3 Phase 1 warns about.
+    nonisolated private static func makeStream(
+        in session: AVCaptureMultiCamSession,
+        for source: CameraSource,
+        reusing existingPreviewLayer: AVCaptureVideoPreviewLayer?
+    ) throws -> Stream {
+        guard let device = AVCaptureDevice.default(
+            source.deviceType, for: .video, position: source.position
+        ) else {
+            throw CaptureError.deviceUnavailable(source)
+        }
+
+        let input = try AVCaptureDeviceInput(device: device)
+
+        // Doc 1 §5.3.1 — the `WithNoConnections` variant is mandatory.
+        guard session.canAddInput(input) else {
+            throw CaptureError.connectionRejected("input for \(source.displayName)")
+        }
+        session.addInputWithNoConnections(input)
+
+        // Doc 1 §5.3.2 — preview layers need manual connections too. The layer
+        // itself is reused when there is one: see `previewLayers`.
+        let previewLayer = existingPreviewLayer
+            ?? AVCaptureVideoPreviewLayer(sessionWithNoConnection: session)
+        previewLayer.videoGravity = .resizeAspectFill
+
+        guard let port = input.ports(
+            for: .video,
+            sourceDeviceType: source.deviceType,
+            sourceDevicePosition: source.position
+        ).first else {
+            throw CaptureError.connectionRejected("no video port for \(source.displayName)")
+        }
+
+        let connection = AVCaptureConnection(inputPort: port, videoPreviewLayer: previewLayer)
+        guard session.canAddConnection(connection) else {
+            throw CaptureError.connectionRejected("preview connection for \(source.displayName)")
+        }
+        session.addConnection(connection)
+
+        // A second, independent connection carries the same port to a data
+        // output. Doc 2 §15.2: the preview is *not* composited — it is two
+        // live layers for lowest latency — so the recording path needs its
+        // own tap on the stream rather than a read-back of the screen.
+        let dataOutput = AVCaptureVideoDataOutput()
+        dataOutput.alwaysDiscardsLateVideoFrames = true
+        dataOutput.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String:
+                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        ]
+
+        guard session.canAddOutput(dataOutput) else {
+            throw CaptureError.connectionRejected("data output for \(source.displayName)")
+        }
+        session.addOutputWithNoConnections(dataOutput)
+
+        let dataConnection = AVCaptureConnection(inputPorts: [port], output: dataOutput)
+        guard session.canAddConnection(dataConnection) else {
+            throw CaptureError.connectionRejected("data connection for \(source.displayName)")
+        }
+        session.addConnection(dataConnection)
+
+        // The recorded frame must be mirrored the same way the preview is,
+        // or a front-camera take plays back reversed from what was framed.
+        dataConnection.automaticallyAdjustsVideoMirroring = false
+        if dataConnection.isVideoMirroringSupported {
+            dataConnection.isVideoMirrored = false
+        }
+
+        // Doc 3 Phase 4 task 1: a photo output per stream, also manually
+        // connected. Doc 1 §5.3.7 is why nothing else is configured on it —
+        // Night Mode, Deep Fusion and ProRAW are all unavailable in
+        // multi-cam, so requesting them would fail silently.
+        let photoOutput = AVCapturePhotoOutput()
+        var attachedPhotoOutput: AVCapturePhotoOutput?
+        if session.canAddOutput(photoOutput) {
+            session.addOutputWithNoConnections(photoOutput)
+            let photoConnection = AVCaptureConnection(inputPorts: [port], output: photoOutput)
+            if session.canAddConnection(photoConnection) {
+                session.addConnection(photoConnection)
+                attachedPhotoOutput = photoOutput
+            }
+        }
+
+        return Stream(
+            source: source,
+            device: device,
+            input: input,
+            previewLayer: previewLayer,
+            dataOutput: dataOutput,
+            photoOutput: attachedPhotoOutput,
+            textureSize: textureSize(of: device)
+        )
+    }
+
+    /// Detaches one stream and builds its replacement, leaving every other
+    /// stream in the session running.
+    ///
+    /// Runs on `sessionQueue`, inside a single configuration transaction, so the
+    /// session is never seen with the old lens gone and the new one not yet
+    /// added.
+    nonisolated private static func replaceStream(
+        in session: AVCaptureMultiCamSession,
+        previous: Stream,
+        with source: CameraSource,
+        resolution: Resolution,
+        frameRate: FrameRate,
+        isMultiCam: Bool
+    ) throws -> Stream {
+        session.beginConfiguration()
+        var committed = false
+        defer { if !committed { session.commitConfiguration() } }
+
+        // Connections first: an input removed while connections still reference
+        // its ports leaves the graph in a state the session will not accept a
+        // new connection into.
+        let retiredPorts = previous.input.ports
+        for connection in session.connections
+        where connection.inputPorts.contains(where: { port in retiredPorts.contains(port) }) {
+            session.removeConnection(connection)
+        }
+        session.removeInput(previous.input)
+        if let dataOutput = previous.dataOutput { session.removeOutput(dataOutput) }
+        if let photoOutput = previous.photoOutput { session.removeOutput(photoOutput) }
+
+        var stream = try makeStream(in: session, for: source, reusing: previous.previewLayer)
+        try applyFormat(
+            to: stream.device,
+            resolution: resolution,
+            frameRate: frameRate,
+            isMultiCam: isMultiCam,
+            source: source
+        )
+
+        // `hardwareCost` is only meaningful once the transaction is committed,
+        // and a lens that does not fit the budget has to go back through the
+        // ladder rather than be left in a session iOS will terminate.
+        session.commitConfiguration()
+        committed = true
+
+        guard session.hardwareCost <= 1.0 else {
+            throw CaptureError.hardwareCostExceeded(session.hardwareCost)
+        }
+
+        // After the format is active, not before: the compositor scales by this
+        // and the new lens rarely delivers the same dimensions as the old one.
+        stream.textureSize = textureSize(of: stream.device)
+        return stream
     }
 
     /// Picks a format per device, then walks the degradation ladder until
@@ -381,37 +635,13 @@ final class MultiCamCaptureEngine: CaptureEngine {
         /// Applies one candidate combination and reports the resulting cost.
         func attempt() throws -> Float {
             for (role, stream) in streams {
-                let target = role == .primary ? primaryResolution : secondaryResolution
-                guard let format = bestFormat(
-                    on: stream.device,
-                    resolution: target,
+                try applyFormat(
+                    to: stream.device,
+                    resolution: role == .primary ? primaryResolution : secondaryResolution,
                     frameRate: frameRate,
-                    requiringMultiCam: isMultiCam
-                ) else {
-                    throw CaptureError.noMultiCamFormat(stream.source)
-                }
-
-                try stream.device.lockForConfiguration()
-                defer { stream.device.unlockForConfiguration() }
-                stream.device.activeFormat = format
-
-                // Pin both cameras to the same rate.
-                //
-                // Without this they free-run within their format's supported
-                // range and settle at *different* rates — the front module in
-                // particular drops to a lower rate in dim light. Measured
-                // effect: 29% of primary frames arrived with no secondary
-                // frame within one frame of skew, so nearly a third of the
-                // recording had no overlay. Doc 3 Phase 2 task 2's one-frame
-                // tolerance only means something if both streams are actually
-                // running at the rate it is a tolerance for.
-                let duration = CMTime(value: 1, timescale: CMTimeScale(frameRate.rawValue))
-                if format.videoSupportedFrameRateRanges.contains(where: {
-                    $0.minFrameDuration <= duration && duration <= $0.maxFrameDuration
-                }) {
-                    stream.device.activeVideoMinFrameDuration = duration
-                    stream.device.activeVideoMaxFrameDuration = duration
-                }
+                    isMultiCam: isMultiCam,
+                    source: stream.source
+                )
             }
             return session.hardwareCost
         }
@@ -445,6 +675,45 @@ final class MultiCamCaptureEngine: CaptureEngine {
             hardwareCost: cost,
             degradationReason: reason
         )
+    }
+
+    /// Activates the best format for one device and pins its frame rate.
+    nonisolated private static func applyFormat(
+        to device: AVCaptureDevice,
+        resolution: Resolution,
+        frameRate: FrameRate,
+        isMultiCam: Bool,
+        source: CameraSource
+    ) throws {
+        guard let format = bestFormat(
+            on: device,
+            resolution: resolution,
+            frameRate: frameRate,
+            requiringMultiCam: isMultiCam
+        ) else {
+            throw CaptureError.noMultiCamFormat(source)
+        }
+
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        device.activeFormat = format
+
+        // Pin both cameras to the same rate.
+        //
+        // Without this they free-run within their format's supported range and
+        // settle at *different* rates — the front module in particular drops to
+        // a lower rate in dim light. Measured effect: 29% of primary frames
+        // arrived with no secondary frame within one frame of skew, so nearly a
+        // third of the recording had no overlay. Doc 3 Phase 2 task 2's
+        // one-frame tolerance only means something if both streams are actually
+        // running at the rate it is a tolerance for.
+        let duration = CMTime(value: 1, timescale: CMTimeScale(frameRate.rawValue))
+        if format.videoSupportedFrameRateRanges.contains(where: {
+            $0.minFrameDuration <= duration && duration <= $0.maxFrameDuration
+        }) {
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
+        }
     }
 
     /// The closest available format at or below the requested tier.

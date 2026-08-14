@@ -85,6 +85,15 @@ enum DebugFlags {
     /// Capture a still on launch and report what came out.
     static var photoTest: Bool { flag("DCPhotoTest") }
 
+    /// Walk the primary stream through every available lens, printing the live
+    /// connection graph after each switch.
+    ///
+    /// Doc 3 Phase 4 task 14's criterion — switching one stream's lens leaves
+    /// the other stream running — is invisible in a screenshot and untappable
+    /// from the command line. The per-stream frame counts either side of a
+    /// switch are what actually answer it.
+    static var lensSwitchTest: Bool { flag("DCLensTest") }
+
     /// Print the probed quality constraint matrix — the per-device capability
     /// ceiling Doc 3 Phase 5 task 9 asks to be recorded.
     static var dumpsQualityMatrix: Bool { flag("DCDumpMatrix") }
@@ -128,6 +137,14 @@ enum DebugFlags {
 
     /// Enter recording already paused (Doc 2 §7.5). Implies `DCRecording`.
     static var startsPaused: Bool { flag("DCPaused") }
+
+    /// Enter the camera with the two streams already swapped (Doc 2 §5.6).
+    ///
+    /// The swap is a role remap inside the engine rather than anything visual,
+    /// so whether it worked is only answerable by looking at which stream is
+    /// filling the screen — and that is exactly the kind of tap the simulator
+    /// cannot be scripted into.
+    static var startsSwapped: Bool { flag("DCSwapped") }
 
     /// Force a layout: `pipRounded`, `pipTall`, `pipCircle`, `splitHorizontal`,
     /// `splitDiagonal`.

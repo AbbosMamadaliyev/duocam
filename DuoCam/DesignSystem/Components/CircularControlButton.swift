@@ -21,29 +21,66 @@ struct CircularControlButton: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isPressed = false
+    @State private var didFireLongPress = false
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: size * 0.42, weight: .medium))
-                .symbolRenderingMode(isActive ? .palette : .hierarchical)
-                .foregroundStyle(foreground)
-                .frame(width: size, height: size)
-                .dcSurface(in: Circle())
-        }
-        .buttonStyle(PressScaleStyle(isPressed: $isPressed))
-        .disabled(!isEnabled)
-        // Attached unconditionally and no-op when there is no long-press
-        // action: `@ViewBuilder` cannot assemble gestures, and a conditional
-        // gesture modifier changes the view's identity between states.
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.4)
-                .onEnded { _ in longPressAction?() }
-        )
-        .dcAnimation(DC.Motion.standard, value: isActive)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(accessibilityValue ?? "")
-        .accessibilityHint(accessibilityHint ?? "")
+        Image(systemName: systemImage)
+            .font(.system(size: size * 0.42, weight: .medium))
+            .symbolRenderingMode(isActive ? .palette : .hierarchical)
+            .foregroundStyle(foreground)
+            .frame(width: size, height: size)
+            .dcSurface(in: Circle())
+            .scaleEffect(isPressed && !reduceMotion ? 0.92 : 1)
+            .opacity(isPressed ? 0.85 : 1)
+            .dcAnimation(DC.Motion.press, value: isPressed)
+            .contentShape(Circle())
+            .gesture(pressGesture)
+            .disabled(!isEnabled)
+            .dcAnimation(DC.Motion.standard, value: isActive)
+            .accessibilityElement()
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityValue(accessibilityValue ?? "")
+            .accessibilityHint(accessibilityHint ?? "")
+            .accessibilityAction { action() }
+    }
+
+    /// Tap and long press share one gesture rather than layering a
+    /// `LongPressGesture` over a `Button`.
+    ///
+    /// Layering them is what broke single taps: the long-press recognizer wins
+    /// the touch sequence, and `Button`'s own tap never fires — every control
+    /// on the camera screen could only be triggered by holding it. The
+    /// minimum-distance-0 drag doubles as a press tracker, so press-down
+    /// feedback still starts on touch rather than on release, and it is the
+    /// same shape as `MorphingShutter`'s gesture.
+    private var pressGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { _ in
+                guard !isPressed else { return }
+                isPressed = true
+            }
+            .onEnded { value in
+                isPressed = false
+
+                // A long press that already fired must not also fire the tap.
+                guard !didFireLongPress else {
+                    didFireLongPress = false
+                    return
+                }
+                // Treat it as a tap only if the finger stayed on the control.
+                let distance = hypot(value.translation.width, value.translation.height)
+                guard distance < size else { return }
+                action()
+            }
+            .simultaneously(with:
+                LongPressGesture(minimumDuration: 0.4)
+                    .onEnded { _ in
+                        guard let longPressAction else { return }
+                        didFireLongPress = true
+                        longPressAction()
+                    }
+            )
     }
 
     private var foreground: Color {
@@ -51,24 +88,6 @@ struct CircularControlButton: View {
         return isActive ? DC.Color.accent : DC.Color.chromePrimary
     }
 
-}
-
-/// Shared press-down feedback: a 0.08s ease-out scale, per Doc 2 §9.1's
-/// "micro-feedback (press)" curve.
-struct PressScaleStyle: ButtonStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Binding var isPressed: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.92 : 1)
-            .opacity(configuration.isPressed ? 0.85 : 1)
-            .animation(DC.Motion.resolve(DC.Motion.press, reduceMotion: reduceMotion),
-                       value: configuration.isPressed)
-            .onChange(of: configuration.isPressed) { _, pressed in
-                isPressed = pressed
-            }
-    }
 }
 
 #Preview("Control trio") {

@@ -65,6 +65,24 @@ final class CameraViewModel {
     private(set) var lastCapture: CaptureRecord?
     private var lastComposition: CompositionParameters?
 
+    /// Whether finished captures are copied into the system photo library as
+    /// well as the in-app one. On by default.
+    ///
+    /// The in-app gallery is DuoCam's own copy; Photos is where people actually
+    /// go to look for what they just shot, and a recording that never arrives
+    /// there reads as a recording that was lost.
+    var savesToPhotoLibrary: Bool = CameraViewModel.storedSavesToPhotoLibrary {
+        didSet {
+            UserDefaults.standard.set(savesToPhotoLibrary, forKey: Self.savesToPhotoLibraryKey)
+        }
+    }
+
+    private static let savesToPhotoLibraryKey = "capture.savesToPhotoLibrary"
+
+    private static var storedSavesToPhotoLibrary: Bool {
+        UserDefaults.standard.object(forKey: savesToPhotoLibraryKey) as? Bool ?? true
+    }
+
     /// Doc 3 Phase 5: what this device can genuinely record. Populated once,
     /// then read synchronously by the Quality sheet.
     private(set) var blockedCombinations: [QualityCombination: QualityBlockReason] = [:]
@@ -209,6 +227,9 @@ final class CameraViewModel {
         if let layout = DebugFlags.forcedLayout {
             configuration.layout = layout
         }
+        if DebugFlags.startsSwapped {
+            swapStreams()
+        }
         if let resolution = DebugFlags.forcedResolution {
             configuration.quality.resolution = resolution
         }
@@ -231,6 +252,34 @@ final class CameraViewModel {
         }
         if DebugFlags.photoTest {
             runPhotoTest()
+        }
+        if DebugFlags.lensSwitchTest {
+            runLensSwitchTest()
+        }
+    }
+
+    /// Walks every rear lens, dumping the connection graph after each switch.
+    ///
+    /// What to read in the output: the secondary stream's frame count must keep
+    /// climbing across all three switches — that is the difference between
+    /// changing one stream's lens and restarting the whole session, which is
+    /// what made every zoom change flash the screen black.
+    private func runLensSwitchTest() {
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard let multiCam = engine as? MultiCamCaptureEngine else { return }
+
+            print("═══ lens switch test · before ═══")
+            print(multiCam.hardwareSelfCheck())
+
+            for stop in engine.availableZoomStops(for: .primary) {
+                guard stop.source != configuration.primarySource else { continue }
+                selectZoom(ZoomPillGroup.Stop(label: stop.label, zoomFactor: stop.zoomFactor))
+                try? await Task.sleep(for: .seconds(2))
+                print("═══ lens switch test · after \(stop.label) ═══")
+                print(multiCam.hardwareSelfCheck())
+            }
+            fflush(stdout)
         }
     }
 
@@ -530,6 +579,10 @@ final class CameraViewModel {
                 quality: negotiatedQuality
             )
             toasts.show("Photo saved", systemImage: "checkmark.circle.fill")
+
+            if let url = lastCapture?.compositedURL {
+                await copyToPhotoLibrary(url, isPhoto: true)
+            }
         } catch {
             toasts.show(error.localizedDescription, systemImage: "exclamationmark.triangle.fill", isWarning: true)
             HapticEngine.shared.error()
@@ -633,12 +686,32 @@ final class CameraViewModel {
 
             toasts.show("Recording saved", systemImage: "checkmark.circle.fill")
 
+            // After the toast, not before: copying a 4K take into Photos takes
+            // long enough that gating the confirmation on it would read as the
+            // save having hung.
+            await copyToPhotoLibrary(result.url, isPhoto: false)
+
             if result.dropFraction > 0.001 {
                 Log.recording.notice(
                     "Drop rate \(String(format: "%.2f", result.dropFraction * 100))% exceeded the 0.1% budget"
                 )
             }
         }
+    }
+
+    /// Copies a finished capture into the system photo library.
+    ///
+    /// Only a failure is surfaced: the success case is already covered by the
+    /// "saved" toast, and two confirmations for one capture is noise.
+    private func copyToPhotoLibrary(_ url: URL, isPhoto: Bool) async {
+        guard savesToPhotoLibrary else { return }
+        let saved = await PhotoLibraryExporter.saveToPhotos(url, isPhoto: isPhoto)
+        guard !saved else { return }
+        toasts.show(
+            "Couldn't save to Photos — check photo access in Settings",
+            systemImage: "exclamationmark.triangle.fill",
+            isWarning: true
+        )
     }
 
     func togglePause() {
@@ -706,10 +779,30 @@ final class CameraViewModel {
         }
     }
 
+    /// Each stop is a *lens*, not a magnification of the current one.
+    ///
+    /// The factor used to be ramped on the outgoing device before the switch,
+    /// which cropped the frame the user was leaving and left that lens sitting
+    /// at the wrong zoom for the next time they came back to it. Selecting a
+    /// stop that belongs to another lens is purely a source change; the engine
+    /// starts the new lens at its own nominal 1×.
     func selectZoom(_ stop: ZoomPillGroup.Stop) {
-        engine.setZoomFactor(stop.zoomFactor, for: .primary, ramped: true)
-        if let source = engine.availableZoomStops(for: .primary).first(where: { $0.label == stop.label })?.source {
+        let source = engine.availableZoomStops(for: .primary)
+            .first { $0.label == stop.label }?
+            .source
+
+        if let source, source == configuration.secondarySource {
+            // Rear + Rear, where the requested lens is already live as the
+            // other stream. A session will not accept a second input for one
+            // device, so this is a swap rather than a lens change: the
+            // requested lens takes the screen and the current one moves to the
+            // overlay. Assigning it to both roles instead fails `canAddInput`
+            // and leaves the session with no streams at all.
+            configuration.swapStreams()
+        } else if let source, source != configuration.primarySource {
             configuration.primarySource = source
+        } else if source == nil {
+            engine.setZoomFactor(stop.zoomFactor, for: .primary, ramped: true)
         }
         HapticEngine.shared.sliderDetent()
     }

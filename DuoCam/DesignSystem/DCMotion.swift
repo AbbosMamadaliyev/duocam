@@ -43,8 +43,6 @@ extension DC {
     enum Duration {
         /// Idle → Recording, all seven elements in parallel (Doc 2 §7.1).
         static let recordingTransition: TimeInterval = 0.4
-        /// The recording border drawing in clockwise from top-centre.
-        static let recordingBorderDraw: TimeInterval = 0.5
         /// Progressive blur while the session reconfigures (Doc 2 §9.2).
         static let reconfigureBlur: TimeInterval = 0.2
         /// Cross-fade from the blurred still to the new live preview.

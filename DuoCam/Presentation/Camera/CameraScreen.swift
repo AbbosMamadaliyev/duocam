@@ -55,11 +55,6 @@ struct CameraScreen: View {
                     chrome(geometry: geometry, safeTop: safeTop, safeBottom: safeBottom)
                 }
 
-                if model.isRecording {
-                    RecordingBorder(isPaused: model.isPaused)
-                        .zIndex(DC.Layer.transient)
-                }
-
                 // Above everything: the screen must actually be white for the
                 // front camera's exposure, chrome included.
                 ScreenFlashOverlay(isActive: model.isScreenFlashing)
@@ -244,8 +239,12 @@ private struct TopCluster: View {
         .dcAnimation(DC.Motion.standard, value: model.configuration.layout)
     }
 
+    /// `grid` rather than `controlGap` between these: four 44pt controls plus
+    /// the quality pill do not fit a 393pt screen at 12pt spacing, and the pill
+    /// is what loses — see `QualityPill`. 8pt keeps the 44pt targets intact
+    /// while giving the readout the width it needs.
     private var controlRow: some View {
-        HStack(alignment: .top, spacing: DC.Spacing.controlGap) {
+        HStack(alignment: .top, spacing: DC.Spacing.grid) {
             QualityPill(
                 quality: model.negotiatedQuality,
                 isDimmed: model.isRecording
@@ -284,16 +283,25 @@ private struct TopCluster: View {
                 systemImage: model.configuration.flashMode.symbolName,
                 isActive: model.configuration.flashMode != .off,
                 accessibilityLabel: "Flash",
-                accessibilityValue: model.configuration.flashMode.accessibilityValue,
-                action: { model.toggleFlash() },
-                longPressAction: { model.toasts.show("Torch brightness arrives in Phase F") }
-            )
-
-            CircularControlButton(
-                systemImage: "gearshape",
-                accessibilityLabel: "Settings"
+                accessibilityValue: model.configuration.flashMode.accessibilityValue
             ) {
-                model.activeSheet = .settings
+                model.toggleFlash()
+            }
+
+            // Hidden while recording: Settings carries the resolution, frame
+            // rate, codec and lens pickers, every one of which tears down and
+            // rebuilds the session. Offering them mid-take is offering the user
+            // a way to end their own recording. The quality pill already refuses
+            // for the same reason; this is the same rule, applied where the
+            // control cannot be usefully dimmed.
+            if !model.isRecording {
+                CircularControlButton(
+                    systemImage: "gearshape",
+                    accessibilityLabel: "Settings"
+                ) {
+                    model.activeSheet = .settings
+                }
+                .transition(.scale.combined(with: .opacity))
             }
         }
     }
@@ -342,6 +350,14 @@ private struct BottomCluster: View {
                 // instead lets the swap control drift into the shutter as the
                 // screen width changes — which is how it ends up overlapping
                 // on one device class and not another.
+                //
+                // The swap control is the one exception, and it is measured from
+                // the *right* rather than from the centre: at `center + 84` its
+                // 48pt disc lands half a point from the layout control's on a
+                // 393pt screen, so the two read as a single fused capsule. It now
+                // sits one `controlGap` inboard of layout, which keeps the pair
+                // grouped as the two "what am I looking at" controls while
+                // leaving 30pt of air to the shutter. Deviation D-4.
                 GalleryButton(model: model)
                     .offset(x: -halfWidth + DC.Spacing.edgeMargin + DC.Size.bottomControl / 2)
 
@@ -360,7 +376,10 @@ private struct BottomCluster: View {
                 ) {
                     model.swapStreams()
                 }
-                .offset(x: 84 + DC.Size.bottomControl / 2)
+                .offset(
+                    x: halfWidth - DC.Spacing.edgeMargin
+                        - DC.Size.bottomControl * 1.5 - DC.Spacing.controlGap
+                )
 
                 CircularControlButton(
                     systemImage: "rectangle.split.2x1",
@@ -422,11 +441,21 @@ private struct GalleryButton: View {
         } label: {
             // Doc 2 §7.2: during recording this slot becomes a still-capture
             // button rather than a way out of the recording screen.
+            //
+            // With a camera glyph in it, not bare: an unlabelled white disc in
+            // the slot that held the gallery a second ago says nothing about
+            // what it now does, and the one guess it invites — "back to my
+            // library" — is the opposite of what it does.
             Group {
                 if model.isRecording {
                     Circle()
                         .fill(DC.Color.chromePrimary)
                         .frame(width: 40, height: 40)
+                        .overlay {
+                            Image(systemName: "camera.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.black)
+                        }
                 } else {
                     RoundedRectangle.dc(DC.Radius.thumbnail)
                         .fill(DC.Color.chromeTertiary.opacity(0.5))
@@ -440,7 +469,6 @@ private struct GalleryButton: View {
             }
         }
         .buttonStyle(.plain)
-        .disabled(model.isRecording && false)
         .accessibilityLabel(model.isRecording ? "Capture still" : "Gallery")
         .dcAnimation(DC.Motion.standard, value: model.isRecording)
     }
@@ -448,6 +476,14 @@ private struct GalleryButton: View {
 
 // MARK: - Recording-only chrome (Doc 2 §7.2)
 
+/// Only the controls that mean something *because* a take is running: pause,
+/// and the one light source that can be changed mid-take.
+///
+/// Adjustments used to sit here as well, while also sitting in the top cluster
+/// throughout — the same control twice on one screen, which makes the user look
+/// for a difference that does not exist. Audio metering sat here too, as a
+/// button whose entire behaviour was a toast saying the feature did not exist
+/// yet; a control that announces its own absence reads as a broken control.
 private struct RecordingControlStack: View {
     @Bindable var model: CameraViewModel
 
@@ -461,59 +497,13 @@ private struct RecordingControlStack: View {
             }
 
             CircularControlButton(
-                systemImage: "slider.horizontal.3",
-                accessibilityLabel: "Adjustments"
-            ) {
-                model.activeSheet = .adjustments
-            }
-
-            CircularControlButton(
                 systemImage: "flashlight.on.fill",
                 isActive: model.configuration.isTorchOn,
                 accessibilityLabel: "Torch"
             ) {
                 model.setTorch(enabled: !model.configuration.isTorchOn)
             }
-
-            CircularControlButton(
-                systemImage: "waveform",
-                accessibilityLabel: "Audio level",
-                accessibilityHint: "Tap to mute"
-            ) {
-                model.toasts.show("Audio metering arrives in Phase E")
-            }
         }
-    }
-}
-
-/// The 1.5pt border that draws in clockwise from top-centre when recording
-/// starts (Doc 2 §7.1 step 5), and turns accent yellow when paused (§7.5).
-private struct RecordingBorder: View {
-    let isPaused: Bool
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var trim: CGFloat = 0
-
-    var body: some View {
-        RoundedRectangle.dc(0)
-            .trim(from: 0, to: trim)
-            .stroke(
-                isPaused ? DC.Color.accent : DC.Color.record,
-                lineWidth: DC.Stroke.recordingBorder
-            )
-            .padding(2)
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-            .onAppear {
-                if reduceMotion {
-                    trim = 1
-                } else {
-                    withAnimation(.easeOut(duration: DC.Duration.recordingBorderDraw)) {
-                        trim = 1
-                    }
-                }
-            }
-            .dcAnimation(DC.Motion.fade, value: isPaused)
     }
 }
 

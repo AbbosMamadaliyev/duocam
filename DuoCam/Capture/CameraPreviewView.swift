@@ -39,7 +39,11 @@ final class PreviewHostView: UIView {
 
     func attach(_ newLayer: CALayer?) {
         guard attached !== newLayer else { return }
-        attached?.removeFromSuperlayer()
+        // Only if it is still ours. During a stream swap the two hosts exchange
+        // layers, and SwiftUI does not promise an order: whichever host updates
+        // second would otherwise tear the layer it just handed over back out of
+        // the host that now owns it, leaving one preview blank.
+        if attached?.superlayer === layer { attached?.removeFromSuperlayer() }
         attached = newLayer
         if let newLayer {
             newLayer.frame = bounds

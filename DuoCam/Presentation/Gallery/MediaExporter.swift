@@ -246,11 +246,15 @@ extension MediaExporter {
 enum PhotoLibraryExporter {
     private static let albumName = "DuoCam"
 
-    static func saveToPhotos(_ url: URL, isPhoto: Bool) async {
+    /// Returns whether the asset actually landed in the library, so callers can
+    /// tell the user when it did not — a silent failure here looks exactly like
+    /// a lost recording.
+    @discardableResult
+    static func saveToPhotos(_ url: URL, isPhoto: Bool) async -> Bool {
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else {
             Log.recording.error("Photos access denied — export not saved")
-            return
+            return false
         }
 
         do {
@@ -265,8 +269,10 @@ enum PhotoLibraryExporter {
                 }
             }
             Log.recording.info("Saved to Photos: \(url.lastPathComponent, privacy: .public)")
+            return true
         } catch {
             Log.recording.error("Photos save failed: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 

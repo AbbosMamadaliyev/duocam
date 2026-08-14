@@ -124,8 +124,6 @@ extension DC {
         static let overlayOpacity: Double = 0.9
         /// The material hairline.
         static let hairline: CGFloat = 0.5
-        /// The recording screen border.
-        static let recordingBorder: CGFloat = 1.5
     }
 
     enum Spacing {

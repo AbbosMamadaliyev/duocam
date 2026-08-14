@@ -87,10 +87,14 @@ final class SimulatedCaptureEngine: CaptureEngine {
     }
 
     func apply(_ newConfiguration: CaptureConfiguration) async {
-        let needsRebuild = newConfiguration.requiresSessionReconfiguration(comparedTo: configuration)
+        let previous = configuration
+        let needsRebuild = newConfiguration.requiresSessionReconfiguration(comparedTo: previous)
         configuration = newConfiguration
 
-        guard needsRebuild else { return }
+        guard needsRebuild else {
+            remapRoles(from: previous)
+            return
+        }
 
         emit(.statusChanged(.configuring))
         rebuildStreams()
@@ -109,6 +113,31 @@ final class SimulatedCaptureEngine: CaptureEngine {
 
     func previewSource(for role: StreamRole) -> PreviewSource? {
         sources[role]
+    }
+
+    /// The simulated counterpart to the hardware engine's role remap.
+    ///
+    /// A swap needs no session work in either engine, but both still have to
+    /// move the two live streams between roles — that is what the swap *is*.
+    /// Modelling it here is what lets the control be verified at all, since
+    /// multi-cam cannot run in the simulator.
+    private func remapRoles(from previous: CaptureConfiguration) {
+        guard previous.primarySource == configuration.secondarySource,
+              previous.secondarySource == configuration.primarySource,
+              let primary = animators[.primary],
+              let secondary = animators[.secondary]
+        else { return }
+
+        let carried = sources
+        animators[.primary] = secondary
+        animators[.secondary] = primary
+        sources[.primary] = carried[.secondary]
+        sources[.secondary] = carried[.primary]
+
+        // Each synthetic frame names the role it is filling, so the labels have
+        // to follow the layers into their new slots.
+        secondary.configure(role: .primary, source: configuration.primarySource)
+        primary.configure(role: .secondary, source: configuration.secondarySource ?? .front)
     }
 
     private func rebuildStreams() {

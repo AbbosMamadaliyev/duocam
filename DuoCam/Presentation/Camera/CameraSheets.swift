@@ -354,6 +354,7 @@ struct SettingsPlaceholderSheet: View {
                             Text(timer.displayName).tag(timer)
                         }
                     }
+                    Toggle("Save to Photos", isOn: $model.savesToPhotoLibrary)
                 }
 
                 Section("Lenses") {
