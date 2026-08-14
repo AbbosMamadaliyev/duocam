@@ -1,0 +1,78 @@
+{
+  "identifier" : "DUOCAM-STOREKIT",
+  "nonRenewingSubscriptions" : [],
+  "products" : [
+    {
+      "displayPrice" : "39.99",
+      "familyShareable" : false,
+      "internalID" : "DC-LIFETIME",
+      "localizations" : [
+        {
+          "description" : "Every Pro feature, once, forever.",
+          "displayName" : "DuoCam Pro Lifetime",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.altzet.DuoCam.pro.lifetime",
+      "referenceName" : "Pro Lifetime",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_askToBuyEnabled" : false,
+    "_storeKitErrors" : []
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "DC-PRO-GROUP",
+      "localizations" : [],
+      "name" : "DuoCam Pro",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [],
+          "displayPrice" : "4.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "DC-MONTHLY",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "4K, 60fps, all layouts, clean sources, no watermark.",
+              "displayName" : "DuoCam Pro Monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.altzet.DuoCam.pro.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Pro Monthly",
+          "subscriptionGroupID" : "DC-PRO-GROUP",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [],
+          "displayPrice" : "35.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "DC-ANNUAL",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "4K, 60fps, all layouts, clean sources, no watermark.",
+              "displayName" : "DuoCam Pro Annual",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.altzet.DuoCam.pro.annual",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Pro Annual",
+          "subscriptionGroupID" : "DC-PRO-GROUP",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}
