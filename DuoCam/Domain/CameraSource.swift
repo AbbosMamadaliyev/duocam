@@ -50,6 +50,15 @@ nonisolated enum CameraSource: String, CaseIterable, Identifiable, Codable, Send
         }
     }
 
+    /// Whether this lens has an LED beside it. Only the rear cluster does — the
+    /// front camera's "flash" is the display, which is a UI concern rather than
+    /// a device one (Doc 2 §4.2).
+    ///
+    /// Lives here rather than being spelled `position == .back` at each call
+    /// site so the presentation layer can ask the question without importing
+    /// AVFoundation.
+    var hasTorch: Bool { position == .back }
+
     /// Front capture is mirrored so the preview matches what a mirror would show
     /// (Doc 3 Phase 1 task 7). Rear capture never is.
     var prefersMirroring: Bool { self == .front }

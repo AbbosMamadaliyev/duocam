@@ -1203,6 +1203,11 @@ final class MultiCamCaptureEngine: CaptureEngine {
         DeviceManualControls.apply(control, to: device, on: sessionQueue)
     }
 
+    var isTorchAvailable: Bool {
+        guard let stream = streams[.primary], stream.source.position == .back else { return false }
+        return stream.device.hasTorch && stream.device.isTorchAvailable
+    }
+
     func setTorch(enabled: Bool, level: Float) {
         // Doc 2 §4.2: torch is rear-primary only. A front-primary session uses
         // the screen flash instead, which is a UI concern rather than a device

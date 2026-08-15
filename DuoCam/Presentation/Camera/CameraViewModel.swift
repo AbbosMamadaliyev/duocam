@@ -34,12 +34,14 @@ final class CameraViewModel {
 
     // MARK: Chrome state
 
-    /// Doc 2 §5.1: position and size persist per layout type.
-    var overlayZone: SnapZone = .topTrailing
+    /// Where the user parked the floating overlay, in unit coordinates of the
+    /// screen (0…1). `nil` until they move it, which resolves to the
+    /// control-aware default corner.
+    ///
+    /// Unit rather than absolute so the placement survives a rotation, a pinch
+    /// resize, and a different device class.
+    var overlayCentreUnit: CGPoint?
     var overlayWidthFraction: CGFloat = 0.32
-    /// Non-nil only while the overlay is being dragged.
-    var overlayDragOffset: CGSize?
-    var highlightedZone: SnapZone?
 
     /// 0.3…0.7 (Doc 2 §5.7).
     var splitRatio: CGFloat = 0.5
@@ -63,7 +65,9 @@ final class CameraViewModel {
 
     private(set) var library: CaptureLibrary?
     private(set) var lastCapture: CaptureRecord?
-    private var lastComposition: CompositionParameters?
+    /// Untracked on purpose: it is written on every frame of an overlay drag,
+    /// and no view reads it.
+    @ObservationIgnored private var lastComposition: CompositionParameters?
 
     /// Whether finished captures are copied into the system photo library as
     /// well as the in-app one. On by default.
@@ -465,7 +469,8 @@ final class CameraViewModel {
             isRecording: isRecording,
             isDualMode: configuration.mode.isDual,
             layout: configuration.layout,
-            overlayWidthFraction: overlayWidthFraction
+            overlayWidthFraction: overlayWidthFraction,
+            showsZoomPills: areZoomPillsVisible && !zoomStops.isEmpty
         )
     }
 
@@ -474,6 +479,7 @@ final class CameraViewModel {
     func select(mode: CaptureMode) {
         guard mode != configuration.mode else { return }
         configuration.apply(mode: mode)
+        extinguishTorchIfUnavailable()
         HapticEngine.shared.modeChanged()
     }
 
@@ -513,16 +519,62 @@ final class CameraViewModel {
             return
         }
         configuration.swapStreams()
+        extinguishTorchIfUnavailable()
         HapticEngine.shared.streamsSwapped()
+    }
+
+    /// Puts the torch out when the lens that owned it stops being primary.
+    ///
+    /// Without this, swapping to the front camera leaves the rear LED burning
+    /// with no control on screen that can turn it off — the user's only way out
+    /// is to swap back or quit the app.
+    ///
+    /// Tested against `configuration` rather than `engine.isTorchAvailable`:
+    /// the engine is handed the new configuration asynchronously, so at this
+    /// point it still reports the outgoing lens.
+    private func extinguishTorchIfUnavailable() {
+        guard configuration.isTorchOn, !configuration.primarySource.hasTorch else { return }
+        setTorch(enabled: false)
     }
 
     func toggleFlash() {
         configuration.flashMode = configuration.flashMode.next
+        HapticEngine.shared.sliderDetent()
+    }
+
+    /// Whether the torch can be lit for the stream that is currently primary.
+    var isTorchAvailable: Bool { engine.isTorchAvailable }
+
+    /// The video-mode counterpart to `toggleFlash`.
+    ///
+    /// It refuses out loud rather than silently. `setTorch` is a no-op on a
+    /// front-primary session — there is no LED the front camera can see — and
+    /// a control that lights up while doing nothing is worse than one that
+    /// explains why it can't.
+    func toggleTorch() {
+        guard isTorchAvailable else {
+            toasts.show(
+                configuration.primarySource.hasTorch
+                    ? "The torch isn't available right now"
+                    : "The front camera has no torch — it uses the screen as its flash",
+                systemImage: "flashlight.off.fill",
+                isWarning: true
+            )
+            HapticEngine.shared.error()
+            return
+        }
+        setTorch(enabled: !configuration.isTorchOn)
+        HapticEngine.shared.sliderDetent()
     }
 
     func setPhotoVideoMode(_ mode: PhotoVideoMode) {
         guard !isRecording, mode != configuration.photoVideoMode else { return }
         configuration.photoVideoMode = mode
+        // Photo mode's top control is Flash, which means the torch loses its
+        // switch on the way in. Leaving the LED burning behind a control that
+        // is no longer on screen is the same stranding as swapping to the front
+        // camera with it on.
+        if mode == .photo, configuration.isTorchOn { setTorch(enabled: false) }
         HapticEngine.shared.subModeChanged()
         showSubModeLabel()
     }
@@ -609,7 +661,11 @@ final class CameraViewModel {
     }
 
     func setSource(_ source: CameraSource, for role: StreamRole) {
-        Task { await engine.setSource(source, for: role) }
+        switch role {
+        case .primary: configuration.primarySource = source
+        case .secondary: configuration.secondarySource = source
+        }
+        extinguishTorchIfUnavailable()
     }
 
     func toggleGrid() {
@@ -735,13 +791,13 @@ final class CameraViewModel {
     /// that is for both to read the same numbers. `LayoutGeometry` owns them;
     /// this hands them across.
     func syncComposition(with geometry: LayoutGeometry) {
-        let centre = geometry.resolvedPosition(for: overlayZone)
+        pushComposition(overlayCentre: geometry.overlayCentre(for: overlayCentreUnit), geometry: geometry)
+    }
+
+    private func pushComposition(overlayCentre centre: CGPoint, geometry: LayoutGeometry) {
         let parameters = CompositionParameters(
             layout: configuration.layout,
-            overlayCentre: CGPoint(
-                x: centre.x / max(geometry.screenSize.width, 1),
-                y: centre.y / max(geometry.screenSize.height, 1)
-            ),
+            overlayCentre: geometry.unitCentre(for: centre),
             overlayWidthFraction: overlayWidthFraction,
             splitRatio: splitRatio,
             diagonalAngle: diagonalAngle
@@ -804,16 +860,28 @@ final class CameraViewModel {
         } else if source == nil {
             engine.setZoomFactor(stop.zoomFactor, for: .primary, ramped: true)
         }
+        extinguishTorchIfUnavailable()
         HapticEngine.shared.sliderDetent()
     }
 
     // MARK: Actions — overlay
 
-    func settleOverlay(at zone: SnapZone) {
-        overlayZone = zone
-        highlightedZone = nil
-        overlayDragOffset = nil
-        HapticEngine.shared.snapped()
+    /// Commits a finished drag. One observable write, at the end of the gesture.
+    func placeOverlay(atUnit unit: CGPoint) {
+        overlayCentreUnit = unit
+        HapticEngine.shared.overlayPlaced()
+    }
+
+    /// Keeps the *recorded* composition following the finger during a drag.
+    ///
+    /// Deliberately writes nothing observable. A drag delivers events at the
+    /// display's refresh rate, and mutating `@Observable` state on every one of
+    /// them re-runs the camera screen's body — geometry, scrims, both preview
+    /// hosts — sixty to a hundred and twenty times a second. That is the stutter
+    /// the overlay used to have; the drag now lives in the view's own `@State`
+    /// and only the compositor is told, which costs a uniform update.
+    func trackOverlayDrag(centre: CGPoint, in geometry: LayoutGeometry) {
+        pushComposition(overlayCentre: centre, geometry: geometry)
     }
 
     func resizeOverlay(to fraction: CGFloat) {

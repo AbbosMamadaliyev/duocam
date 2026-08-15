@@ -54,11 +54,16 @@ final class HapticEngine {
 
     // MARK: Overlay
 
-    /// The nearest snap zone changed while dragging.
-    func snapZoneChanged() { light.impactOccurred() }
+    /// The overlay was picked up and is now following the finger.
+    ///
+    /// Light, and fired exactly once per drag. It used to fire on every snap
+    /// zone the finger passed over, which on a screen-length drag is eight taps
+    /// against the palm — the overlay felt like it was resisting rather than
+    /// being carried.
+    func overlayLifted() { light.impactOccurred() }
 
-    /// The overlay settled into a zone.
-    func snapped() { medium.impactOccurred() }
+    /// The overlay was set down.
+    func overlayPlaced() { light.impactOccurred() }
 
     /// Crossed a 5% step while pinch-resizing.
     func resizeStep() { rigid.impactOccurred() }

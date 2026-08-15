@@ -17,77 +17,52 @@ struct CircularControlButton: View {
     var accessibilityHint: String?
 
     var action: () -> Void = {}
-    var longPressAction: (() -> Void)?
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isPressed = false
-    @State private var didFireLongPress = false
-
-    var body: some View {
-        Image(systemName: systemImage)
-            .font(.system(size: size * 0.42, weight: .medium))
-            .symbolRenderingMode(isActive ? .palette : .hierarchical)
-            .foregroundStyle(foreground)
-            .frame(width: size, height: size)
-            .dcSurface(in: Circle())
-            .scaleEffect(isPressed && !reduceMotion ? 0.92 : 1)
-            .opacity(isPressed ? 0.85 : 1)
-            .dcAnimation(DC.Motion.press, value: isPressed)
-            .contentShape(Circle())
-            .gesture(pressGesture)
-            .disabled(!isEnabled)
-            .dcAnimation(DC.Motion.standard, value: isActive)
-            .accessibilityElement()
-            .accessibilityAddTraits(.isButton)
-            .accessibilityLabel(accessibilityLabel)
-            .accessibilityValue(accessibilityValue ?? "")
-            .accessibilityHint(accessibilityHint ?? "")
-            .accessibilityAction { action() }
-    }
-
-    /// Tap and long press share one gesture rather than layering a
-    /// `LongPressGesture` over a `Button`.
+    /// Exactly the shape `QualityPill` and the gallery control have: a `Button`
+    /// with `.buttonStyle(.plain)` and nothing layered on top of it.
     ///
-    /// Layering them is what broke single taps: the long-press recognizer wins
-    /// the touch sequence, and `Button`'s own tap never fires — every control
-    /// on the camera screen could only be triggered by holding it. The
-    /// minimum-distance-0 drag doubles as a press tracker, so press-down
-    /// feedback still starts on touch rather than on release, and it is the
-    /// same shape as `MorphingShutter`'s gesture.
-    private var pressGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { _ in
-                guard !isPressed else { return }
-                isPressed = true
-            }
-            .onEnded { value in
-                isPressed = false
-
-                // A long press that already fired must not also fire the tap.
-                guard !didFireLongPress else {
-                    didFireLongPress = false
-                    return
-                }
-                // Treat it as a tap only if the finger stayed on the control.
-                let distance = hypot(value.translation.width, value.translation.height)
-                guard distance < size else { return }
-                action()
-            }
-            .simultaneously(with:
-                LongPressGesture(minimumDuration: 0.4)
-                    .onEnded { _ in
-                        guard let longPressAction else { return }
-                        didFireLongPress = true
-                        longPressAction()
-                    }
-            )
+    /// Every earlier version of this control added something to that shape, and
+    /// every one of them cost the single tap. First a hand-rolled
+    /// `DragGesture`/`LongPressGesture` composite, which only ever fired on a
+    /// hold. Then a `Button` — but wrapped in a custom `ButtonStyle`, a
+    /// `.contentShape(Circle())` and a long-press modifier, and the six controls
+    /// built from it stayed dead on a single tap while the two controls built
+    /// the plain way, in the same clusters, on the same screen, kept working.
+    /// That comparison is the whole argument: what these controls needed was not
+    /// a better layer, it was no layer.
+    ///
+    /// What went with those layers:
+    ///
+    /// - The press-down scale. `ButtonStyle` is the only hook for it, and it is
+    ///   the hook that was in the way. The resting appearance is unchanged.
+    /// - `.contentShape(Circle())`, which had shrunk the target from the full
+    ///   `size`-square to the circle inscribed in it — and then shrank it again
+    ///   mid-press, because the style scaled the shape it was measured from.
+    ///   The target is now the whole square, which is what the gallery control
+    ///   has always used.
+    /// - `longPressAction`, which no caller had passed since the flash control
+    ///   stopped offering torch brightness.
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: size * 0.42, weight: .medium))
+                .symbolRenderingMode(isActive ? .palette : .hierarchical)
+                .foregroundStyle(foreground)
+                .frame(width: size, height: size)
+                .dcSurface(in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .dcAnimation(DC.Motion.standard, value: isActive)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(accessibilityValue ?? "")
+        .accessibilityHint(accessibilityHint ?? "")
     }
 
     private var foreground: Color {
         if !isEnabled { return DC.Color.chromeTertiary }
         return isActive ? DC.Color.accent : DC.Color.chromePrimary
     }
-
 }
 
 #Preview("Control trio") {

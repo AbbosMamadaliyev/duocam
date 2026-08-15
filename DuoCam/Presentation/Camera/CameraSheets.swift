@@ -12,27 +12,49 @@ import SwiftUI
 struct LayoutSheet: View {
     @Bindable var model: CameraViewModel
 
+    /// Gutter between cards. The cards themselves flex, so this is the only
+    /// horizontal number the row needs.
+    private static let cardGap: CGFloat = 8
+
+    /// Title + gap + card row + top and bottom margins, and nothing else.
+    ///
+    /// The detent was a round 200 against ~160 of content, which left a band of
+    /// empty material under the cards that read as a sheet that had failed to
+    /// load the rest of itself. Derived from the content instead, so it stays
+    /// right if the card grows.
+    private static var detentHeight: CGFloat {
+        20 + 22 + 16 + LayoutCard.height + 24
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Layout")
                 .font(DC.Font.sheetTitle)
                 .foregroundStyle(DC.Color.chromePrimary)
 
-            HStack(spacing: 8) {
+            HStack(spacing: Self.cardGap) {
                 ForEach(LayoutType.allCases) { layout in
-                    LayoutCard(layout: layout, isSelected: layout == model.configuration.layout) {
+                    LayoutCard(
+                        layout: layout,
+                        isSelected: layout == model.configuration.layout,
+                        // Doc 1 §4.5 gates the split layouts. Tapping one has
+                        // always raised the paywall; until now the card gave no
+                        // sign of it beforehand, so the paywall arrived as a
+                        // surprise in place of the layout the user asked for.
+                        isLocked: layout.isSplit && model.entitlements?.isPro == false
+                    ) {
                         model.select(layout: layout)
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .center)
-
-            Spacer(minLength: 0)
         }
+        // `edgeMargin` on all four sides. The cards divide what is left, so the
+        // row can no longer overrun the sheet and pin itself to both edges.
         .padding(.horizontal, DC.Spacing.edgeMargin)
         .padding(.top, 20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .presentationDetents([.height(200)])
+        .padding(.bottom, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .presentationDetents([.height(Self.detentHeight)])
         .presentationBackground(.regularMaterial)
         .presentationDragIndicator(.visible)
         .presentationBackgroundInteraction(.enabled)

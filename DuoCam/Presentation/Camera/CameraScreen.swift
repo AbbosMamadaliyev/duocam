@@ -16,8 +16,19 @@ struct CameraScreen: View {
         GeometryReader { proxy in
             let safeTop = proxy.safeAreaInsets.top
             let safeBottom = proxy.safeAreaInsets.bottom
+            // The `GeometryReader` is laid out *inside* the safe area, so
+            // `proxy.size` is the inset size — but the `ZStack` below ignores
+            // the safe area and therefore positions its children in full-screen
+            // coordinates. Handing the inset size to `LayoutGeometry` made every
+            // frame it computes short by the two insets: the bottom cluster's
+            // obstacle rect sat ~120pt above the real shutter, and the overlay
+            // could not be moved into the bottom fifth of the display at all.
+            let screenSize = CGSize(
+                width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
+                height: proxy.size.height + safeTop + safeBottom
+            )
             let geometry = model.geometry(
-                screenSize: proxy.size,
+                screenSize: screenSize,
                 safeTop: safeTop,
                 safeBottom: safeBottom
             )
@@ -51,8 +62,16 @@ struct CameraScreen: View {
                         .zIndex(DC.Layer.toast)
                 }
 
+                // Above the overlay, not below it. Without an explicit index the
+                // chrome inherits 0 and the ZStack sorts it *under* both the
+                // scrims and the floating overlay — which is why an overlay
+                // parked on the left edge swallowed the taps meant for the
+                // pause and torch controls. Design principle 4, "nothing
+                // important is ever covered", is a z-order claim before it is a
+                // geometry one.
                 if !model.isChromeHidden {
                     chrome(geometry: geometry, safeTop: safeTop, safeBottom: safeBottom)
+                        .zIndex(DC.Layer.topCluster)
                 }
 
                 // Above everything: the screen must actually be white for the
@@ -74,7 +93,7 @@ struct CameraScreen: View {
             // The compositor has to be told the same geometry the chrome is
             // drawing with, on every change that can move the overlay.
             .onChange(of: geometry) { _, new in model.syncComposition(with: new) }
-            .onChange(of: model.overlayZone) { _, _ in model.syncComposition(with: geometry) }
+            .onChange(of: model.overlayCentreUnit) { _, _ in model.syncComposition(with: geometry) }
             .task(id: geometry) { model.syncComposition(with: geometry) }
         }
         .background(Color.black)
@@ -279,13 +298,41 @@ private struct TopCluster: View {
                 model.activeSheet = .adjustments
             }
 
-            CircularControlButton(
-                systemImage: model.configuration.flashMode.symbolName,
-                isActive: model.configuration.flashMode != .off,
-                accessibilityLabel: "Flash",
-                accessibilityValue: model.configuration.flashMode.accessibilityValue
-            ) {
-                model.toggleFlash()
+            // Doc 2 §4.2 gives this slot to flash, and flash is only read where
+            // a still is exposed — `capturePhoto` builds the
+            // `AVCapturePhotoSettings`. Nothing in the video path ever looked at
+            // it, so in Video mode this control used to cycle its own icon
+            // through three states and change nothing about the picture.
+            //
+            // In Video mode it is now the torch, which is the light source a
+            // take can actually use. One slot, one meaning per mode, and neither
+            // meaning is decorative.
+            //
+            // Hidden while recording, alongside Settings: the recording stack
+            // takes over the torch for the duration, and the same control on two
+            // edges of one screen makes the user look for a difference that does
+            // not exist.
+            if !model.isRecording {
+                if model.configuration.photoVideoMode == .photo {
+                    CircularControlButton(
+                        systemImage: model.configuration.flashMode.symbolName,
+                        isActive: model.configuration.flashMode != .off,
+                        accessibilityLabel: "Flash",
+                        accessibilityValue: model.configuration.flashMode.accessibilityValue
+                    ) {
+                        model.toggleFlash()
+                    }
+                } else {
+                    CircularControlButton(
+                        systemImage: model.configuration.isTorchOn
+                            ? "flashlight.on.fill" : "flashlight.off.fill",
+                        isActive: model.configuration.isTorchOn,
+                        accessibilityLabel: "Torch",
+                        accessibilityValue: model.configuration.isTorchOn ? "On" : "Off"
+                    ) {
+                        model.toggleTorch()
+                    }
+                }
             }
 
             // Hidden while recording: Settings carries the resolution, frame
@@ -329,7 +376,7 @@ private struct BottomCluster: View {
                     selected: model.selectedZoomStop,
                     onSelect: { model.selectZoom($0) }
                 )
-                .padding(.bottom, 20)
+                .padding(.bottom, DC.Spacing.zoomPillGap)
                 .transition(.opacity)
             }
 
@@ -491,17 +538,25 @@ private struct RecordingControlStack: View {
         VStack(spacing: DC.Spacing.controlGap) {
             CircularControlButton(
                 systemImage: model.isPaused ? "record.circle" : "pause.fill",
-                accessibilityLabel: model.isPaused ? "Resume recording" : "Pause recording"
+                isActive: model.isPaused,
+                accessibilityLabel: model.isPaused ? "Resume recording" : "Pause recording",
+                accessibilityValue: model.isPaused ? "Paused" : "Recording"
             ) {
                 model.togglePause()
             }
 
+            // Through `toggleTorch`, not `setTorch`. `setTorch` is a no-op
+            // whenever the primary stream is front-facing — there is no LED the
+            // front camera can see — and this control used to take that no-op
+            // silently while still lighting up as though the torch were on.
             CircularControlButton(
-                systemImage: "flashlight.on.fill",
+                systemImage: model.configuration.isTorchOn
+                    ? "flashlight.on.fill" : "flashlight.off.fill",
                 isActive: model.configuration.isTorchOn,
-                accessibilityLabel: "Torch"
+                accessibilityLabel: "Torch",
+                accessibilityValue: model.configuration.isTorchOn ? "On" : "Off"
             ) {
-                model.setTorch(enabled: !model.configuration.isTorchOn)
+                model.toggleTorch()
             }
         }
     }

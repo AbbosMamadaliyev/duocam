@@ -1,7 +1,13 @@
 import CoreGraphics
 import Foundation
 
-/// One of the eight positions the floating overlay can settle into.
+/// One of the eight canonical parking spots for the floating overlay.
+///
+/// No longer a magnetic target — the overlay is dragged freely and stays where
+/// it is dropped. These survive as the *discrete* alternative to a drag: the
+/// launch position, and the positions VoiceOver's "Move to next corner" action
+/// steps through, because a drag target with no keyboard/VoiceOver equivalent is
+/// unusable without sight (Doc 2 §14).
 nonisolated enum SnapZone: String, CaseIterable, Identifiable, Codable, Sendable {
     case topLeading, topCenter, topTrailing
     case leadingCenter, trailingCenter
@@ -49,10 +55,27 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
     var layout: LayoutType = .pipRounded
     /// Overlay width as a fraction of screen width, 0.25…0.5 (Doc 2 §5.5).
     var overlayWidthFraction: CGFloat = 0.32
+    /// Whether the zoom pill row is on screen.
+    ///
+    /// It is a control cluster like any other — an overlay parked on it takes
+    /// its taps — but it is the only one the camera screen hides on its own
+    /// schedule, so the geometry cannot infer it from the recording state.
+    var showsZoomPills: Bool = true
 
     /// Minimum gap left between the overlay and any control it would otherwise
     /// cover (Doc 2 §5.4).
     static let minimumClearance: CGFloat = 12
+
+    /// The only limit on where the user may park the floating overlay: a 16pt
+    /// gutter on every screen edge, so it can never be dragged off-screen or
+    /// clipped by the display's corner radius.
+    ///
+    /// Deliberately *not* the safe-area inset. Doc 2 §5.2 originally confined
+    /// the overlay to eight snap zones inside the safe area, which is what made
+    /// it feel like the app was choosing the position rather than the user. The
+    /// controls stay reachable because the chrome sits above the overlay in the
+    /// layer stack, not because the overlay is fenced away from it.
+    static let overlayEdgeInset: CGFloat = 16
 
     // MARK: Overlay
 
@@ -114,16 +137,33 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
         )
     }
 
-    /// Zoom pills float 84pt above the shutter (Doc 2 §4.3).
-    var zoomPillCenterY: CGFloat {
-        bottomClusterFrame.midY - 84
+    /// The zoom pill row, which floats directly above the primary control row
+    /// (Doc 2 §4.3).
+    ///
+    /// Full width like `bottomClusterFrame`, though the group itself is centred
+    /// and narrow: what this rect is *for* is telling the overlay which band it
+    /// must not take touches in, and the band is what matters, not the pills.
+    var zoomPillFrame: CGRect {
+        guard showsZoomPills else { return .null }
+        let bottom = bottomClusterFrame.minY - DC.Spacing.grid - DC.Spacing.zoomPillGap
+        return CGRect(
+            x: 0,
+            y: bottom - DC.Size.zoomPillRow,
+            width: screenSize.width,
+            height: DC.Size.zoomPillRow
+        )
     }
+
 
     /// The vertical control column that slides in from the left edge during
     /// recording (Doc 2 §7.2).
     var recordingStackFrame: CGRect {
         guard isRecording else { return .null }
-        let height = DC.Size.control * 4 + DC.Spacing.controlGap * 3
+        // Two controls — pause and torch. It claimed four for as long as
+        // Adjustments and audio metering were also in the stack, and kept
+        // reserving 112pt of screen that nothing occupies after they were
+        // removed.
+        let height = DC.Size.control * 2 + DC.Spacing.controlGap
         return CGRect(
             x: DC.Spacing.edgeMargin,
             y: (screenSize.height - height) / 2,
@@ -132,10 +172,22 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
         )
     }
 
-    /// Every rect the overlay must stay clear of.
+    /// Every rect the overlay must stay clear of — and, just as importantly,
+    /// every rect it must not take a touch in.
+    ///
+    /// `FloatingOverlayView` subtracts these from the overlay's hit shape, so a
+    /// control cluster missing from this list is a control the overlay silently
+    /// kills whenever it is parked on top of it. That is what happened to the
+    /// zoom pills, which were the one cluster never listed here.
     var obstacles: [CGRect] {
-        [topClusterFrame, bottomClusterFrame, modeSelectorFrame, recordingStackFrame]
-            .filter { !$0.isNull && !$0.isEmpty }
+        [
+            topClusterFrame,
+            zoomPillFrame,
+            bottomClusterFrame,
+            modeSelectorFrame,
+            recordingStackFrame,
+        ]
+        .filter { !$0.isNull && !$0.isEmpty }
     }
 
     // MARK: Snap zones
@@ -229,29 +281,56 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
         )
     }
 
-    /// The zone nearest an arbitrary point, measured against *resolved*
-    /// positions — snapping to a base position the overlay can never occupy
-    /// would make the highlight during drag disagree with where it lands.
-    func nearestZone(to point: CGPoint) -> SnapZone {
-        SnapZone.allCases.min { lhs, rhs in
-            distanceSquared(point, resolvedPosition(for: lhs))
-                < distanceSquared(point, resolvedPosition(for: rhs))
-        } ?? .topTrailing
+    // MARK: Free overlay placement
+
+    /// Where the overlay sits when the user has not moved it yet.
+    ///
+    /// Still control-aware — the first thing the user sees must not be an
+    /// overlay parked on the flash button — but it is only a *starting* point.
+    /// The moment they drag, `overlayCentre(for:)` stops consulting the
+    /// obstacle list entirely.
+    var defaultOverlayCentre: CGPoint {
+        resolvedPosition(for: .topTrailing)
     }
 
-    /// Velocity-projected landing point (Doc 2 §5.3). The 0.15 multiplier is
-    /// what makes a quick flick carry across the screen while a slow drag
-    /// settles where it was released — the same feel as iOS's own PiP window.
-    func projectedPoint(from position: CGPoint, velocity: CGSize) -> CGPoint {
-        CGPoint(
-            x: position.x + velocity.width * 0.15,
-            y: position.y + velocity.height * 0.15
+    /// The overlay's centre for a stored unit position, clamped into the screen.
+    ///
+    /// `nil` means "never moved", which resolves to `defaultOverlayCentre`.
+    func overlayCentre(for unit: CGPoint?) -> CGPoint {
+        guard let unit else { return clampOverlayCentre(defaultOverlayCentre) }
+        return clampOverlayCentre(CGPoint(
+            x: unit.x * screenSize.width,
+            y: unit.y * screenSize.height
+        ))
+    }
+
+    /// Confines a centre point so the overlay keeps `overlayEdgeInset` of air on
+    /// every screen edge — the only constraint on a free drag.
+    ///
+    /// The ranges are built with `min`/`max` rather than assumed ordered: an
+    /// overlay resized to 50% of the width is wider than the gutter allows on a
+    /// narrow screen, and a reversed `ClosedRange` traps.
+    func clampOverlayCentre(_ centre: CGPoint) -> CGPoint {
+        let size = overlaySize
+        let inset = Self.overlayEdgeInset
+
+        let minX = inset + size.width / 2
+        let maxX = screenSize.width - inset - size.width / 2
+        let minY = inset + size.height / 2
+        let maxY = screenSize.height - inset - size.height / 2
+
+        return CGPoint(
+            x: centre.x.clamped(to: min(minX, maxX)...max(minX, maxX)),
+            y: centre.y.clamped(to: min(minY, maxY)...max(minY, maxY))
         )
     }
 
-    private func distanceSquared(_ a: CGPoint, _ b: CGPoint) -> CGFloat {
-        let dx = a.x - b.x
-        let dy = a.y - b.y
-        return dx * dx + dy * dy
+    /// Screen point → unit position, so a stored placement survives rotation,
+    /// a resize, and a different device class.
+    func unitCentre(for point: CGPoint) -> CGPoint {
+        CGPoint(
+            x: point.x / max(screenSize.width, 1),
+            y: point.y / max(screenSize.height, 1)
+        )
     }
 }

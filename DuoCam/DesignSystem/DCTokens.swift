@@ -132,6 +132,13 @@ extension DC {
         static let edgeMargin: CGFloat = 20
         /// Gap between the controls in the top-right trio.
         static let controlGap: CGFloat = 12
+        /// Clear air between the zoom pill row and the primary control row.
+        ///
+        /// A token rather than a literal in `BottomCluster` because
+        /// `LayoutGeometry` has to place the same band: the overlay is told
+        /// which rects are controls by rect, and a duplicated constant is how
+        /// that list silently stops matching what is on screen.
+        static let zoomPillGap: CGFloat = 20
     }
 
     enum Size {
@@ -151,6 +158,8 @@ extension DC {
         static let timerHeight: CGFloat = 32
         /// Mode selector height.
         static let modeSelector: CGFloat = 44
+        /// Zoom pill row height — a 32pt pill in 4pt of container padding.
+        static let zoomPillRow: CGFloat = 40
         /// Primary CTA button height (onboarding, paywall).
         static let cta: CGFloat = 56
     }

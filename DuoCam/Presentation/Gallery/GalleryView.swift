@@ -78,7 +78,17 @@ struct GalleryView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button("Done") { dismiss() }
+            // Selection mode had no exit of its own: once "Select" was tapped,
+            // the only ways out were deleting something or leaving the gallery
+            // altogether. A mode you cannot back out of is a trap, not a mode.
+            if isSelecting {
+                Button("Cancel") {
+                    isSelecting = false
+                    selectedIDs.removeAll()
+                }
+            } else {
+                Button("Done") { dismiss() }
+            }
         }
         ToolbarItem(placement: .topBarTrailing) {
             if captures.isEmpty {

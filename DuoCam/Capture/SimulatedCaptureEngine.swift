@@ -259,6 +259,12 @@ final class SimulatedCaptureEngine: CaptureEngine {
         Log.capture.debug("Simulated manual control \(String(describing: control), privacy: .public)")
     }
 
+    /// Modelled rather than hard-coded `false`, so the torch control's enabled
+    /// and refused states are both reviewable in the simulator.
+    var isTorchAvailable: Bool {
+        configuration.primarySource.position == .back
+    }
+
     func setTorch(enabled: Bool, level: Float) {
         Log.capture.debug("Simulated torch \(enabled) at \(level)")
     }

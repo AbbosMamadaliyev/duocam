@@ -108,6 +108,14 @@ protocol CaptureEngine: AnyObject {
     /// Manual controls, applied per stream (Doc 2 §6.2).
     func setManualControl(_ control: ManualControl, for role: StreamRole)
 
+    /// Whether the primary stream's device has a torch that can be lit right
+    /// now (Doc 2 §4.2 — rear-primary only).
+    ///
+    /// Exposed so the UI can refuse *out loud*. `setTorch` returns nothing and
+    /// silently no-ops on a front-facing device, which left the torch control
+    /// looking live while doing nothing at all.
+    var isTorchAvailable: Bool { get }
+
     /// Torch, rear-primary only (Doc 2 §4.2).
     func setTorch(enabled: Bool, level: Float)
 
