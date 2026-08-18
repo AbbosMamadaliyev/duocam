@@ -19,6 +19,19 @@ nonisolated struct CaptureConfiguration: Equatable, Codable, Sendable {
     var primarySource: CameraSource = .rearWide
     var secondarySource: CameraSource? = .front
 
+    /// What the user asked the main stream to magnify, expressed the way the
+    /// pills read it: `1` is the wide lens's own framing, `0.5` is twice as
+    /// wide, `3` is three times closer.
+    ///
+    /// Deliberately *not* a device zoom factor, and deliberately independent of
+    /// `primarySource`. A lens is one way to reach a magnification and digital
+    /// zoom is the other; keeping the request in lens-agnostic units is what
+    /// lets the engine ride one lens up to the point where the next takes over,
+    /// instead of cutting between them. Excluded from
+    /// `requiresSessionReconfiguration` because no zoom, of either kind, needs
+    /// the graph rebuilt.
+    var primaryZoom: CGFloat = 1
+
     var photoVideoMode: PhotoVideoMode = .video
     var flashMode: FlashMode = .off
     var isTorchOn: Bool = false
@@ -35,6 +48,9 @@ nonisolated struct CaptureConfiguration: Equatable, Codable, Sendable {
         let defaults = newMode.defaultSources
         primarySource = defaults.primary
         secondarySource = defaults.secondary
+        // A magnification asked of one pairing means nothing to the next: the
+        // new primary is a different lens with a different widest frame.
+        primaryZoom = 1
     }
 
     /// Swaps which stream fills the screen. Pure presentation — Doc 2 §5.6
@@ -44,6 +60,12 @@ nonisolated struct CaptureConfiguration: Equatable, Codable, Sendable {
         guard let secondary = secondarySource else { return }
         secondarySource = primarySource
         primarySource = secondary
+        // The stream arriving from the overlay is framed at its own lens's
+        // full width; carrying the old stream's magnification over would crop
+        // it the moment it took the screen. Callers that know better — the zoom
+        // pills, which swap *in order to* reach a magnification — set it again
+        // after swapping.
+        primaryZoom = 1
     }
 
     /// True when moving from `self` to `other` requires tearing down and

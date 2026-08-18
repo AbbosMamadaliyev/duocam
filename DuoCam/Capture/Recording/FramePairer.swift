@@ -21,12 +21,26 @@ final class FramePairer: @unchecked Sendable {
     private let lock = NSLock()
     private var secondaryBuffer: [(time: CMTime, pixels: CVPixelBuffer)] = []
 
+    /// The newest secondary frame ever offered, kept outside the ring.
+    ///
+    /// This is what the overlay falls back to when nothing is inside tolerance.
+    /// See `matchSecondary(for:)` for why a stale overlay beats no overlay.
+    private var lastSecondary: (time: CMTime, pixels: CVPixelBuffer)?
+
     /// Depth 3 covers a full frame of skew in either direction plus a spare.
     /// Deeper would add latency; shallower would drop pairs during jitter.
     private let ringDepth = 3
 
+    /// How long the last secondary frame may be reused before the overlay is
+    /// dropped instead. Half a second is far longer than any skew or lens
+    /// switch, and short enough that a genuinely dead stream does not leave a
+    /// frozen picture in the corner for the rest of the take.
+    private let maximumHold = CMTime(value: 1, timescale: 2)
+
     private(set) var pairedCount = 0
     private(set) var unpairedCount = 0
+    /// Frames that reused the previous secondary rather than pairing.
+    private(set) var heldCount = 0
 
     init(frameRate: FrameRate = .fps30) {
         tolerance = CMTime(value: 1, timescale: CMTimeScale(frameRate.rawValue))
@@ -46,23 +60,30 @@ final class FramePairer: @unchecked Sendable {
         if secondaryBuffer.count > ringDepth {
             secondaryBuffer.removeFirst(secondaryBuffer.count - ringDepth)
         }
+        // Newest wins: the two streams free-run, so a late arrival with an older
+        // timestamp than one already seen must not become the held frame.
+        if let last = lastSecondary, CMTimeCompare(time, last.time) <= 0 { return }
+        lastSecondary = (time, pixels)
     }
 
     /// Called from the primary stream's queue. Returns the secondary frame to
-    /// composite with, or `nil` when nothing is close enough.
+    /// composite with, or `nil` when there is nothing usable at all.
     ///
-    /// A `nil` here is not an error: it happens for the first frame or two of a
-    /// session and during a lens switch. The caller composites primary-only
-    /// rather than dropping the frame, because a dropped frame is a gap in the
-    /// recording and a missing overlay is not.
+    /// When nothing is inside tolerance the **previous** secondary frame is
+    /// returned rather than `nil`, for up to `maximumHold`.
+    ///
+    /// That reuse is the whole point of this type. `nil` makes the compositor
+    /// clear `hasSecondary`, and the shader then draws the primary edge to edge
+    /// — the overlay, its rounded mask and its stroke all vanish for exactly
+    /// that one frame. Scattered through a take at 30 fps this is what the
+    /// overlay blinking on and off actually *is*: not a camera dropping out, but
+    /// single frames failing to find a partner within one frame of skew, which
+    /// happens routinely after a lens switch, under thermal frame-rate drift, or
+    /// whenever the two modules' phase slips. A 33 ms-old overlay is
+    /// indistinguishable to the eye; a missing one is a flash.
     func matchSecondary(for primaryTime: CMTime) -> CVPixelBuffer? {
         lock.lock()
         defer { lock.unlock() }
-
-        guard !secondaryBuffer.isEmpty else {
-            unpairedCount += 1
-            return nil
-        }
 
         var best: (time: CMTime, pixels: CVPixelBuffer)?
         var bestDelta = CMTime.positiveInfinity
@@ -75,21 +96,47 @@ final class FramePairer: @unchecked Sendable {
             }
         }
 
-        guard let best, CMTimeCompare(bestDelta, tolerance) <= 0 else {
-            unpairedCount += 1
-            return nil
+        if let best, CMTimeCompare(bestDelta, tolerance) <= 0 {
+            pairedCount += 1
+            return best.pixels
         }
 
-        pairedCount += 1
-        return best.pixels
+        unpairedCount += 1
+
+        guard let held = lastSecondary else { return nil }
+        let age = CMTimeAbsoluteValue(CMTimeSubtract(primaryTime, held.time))
+        guard CMTimeCompare(age, maximumHold) <= 0 else { return nil }
+
+        heldCount += 1
+        return held.pixels
     }
 
+    /// Drops every buffered frame. For a session rebuild, where the frames in
+    /// hand came from a lens that no longer exists.
     func reset() {
         lock.lock()
         defer { lock.unlock() }
         secondaryBuffer.removeAll(keepingCapacity: true)
+        lastSecondary = nil
+        resetCountsLocked()
+    }
+
+    /// Zeroes the counters and keeps the frames.
+    ///
+    /// This is what the start of a recording wants. The secondary stream has
+    /// been running and offering frames the whole time the user was framing the
+    /// shot, so throwing them away would guarantee the take's first frames have
+    /// no overlay — the overlay arriving a beat late at the top of every clip.
+    func resetStatistics() {
+        lock.lock()
+        defer { lock.unlock() }
+        resetCountsLocked()
+    }
+
+    private func resetCountsLocked() {
         pairedCount = 0
         unpairedCount = 0
+        heldCount = 0
     }
 
     /// Fraction of primary frames that found no partner — the number Doc 3
@@ -97,5 +144,13 @@ final class FramePairer: @unchecked Sendable {
     var unpairedFraction: Double {
         let total = pairedCount + unpairedCount
         return total == 0 ? 0 : Double(unpairedCount) / Double(total)
+    }
+
+    /// Fraction of primary frames that reached the compositor with **no**
+    /// overlay — the ones the viewer sees as a blink. Held frames are excluded
+    /// because they are not visible as anything.
+    var blankFraction: Double {
+        let total = pairedCount + unpairedCount
+        return total == 0 ? 0 : Double(unpairedCount - heldCount) / Double(total)
     }
 }

@@ -32,6 +32,7 @@ final class RecordingController: @unchecked Sendable {
 
     private var outputURL: URL?
     private var sessionStartTime: CMTime?
+    private var lastAppendedTime: CMTime?
     private var pausedAccumulated: CMTime = .zero
     private var pauseBeganAt: CMTime?
 
@@ -112,6 +113,7 @@ final class RecordingController: @unchecked Sendable {
         self.adaptor = adaptor
         self.outputURL = url
         sessionStartTime = nil
+        lastAppendedTime = nil
         pausedAccumulated = .zero
         pauseBeganAt = nil
         framesAppended = 0
@@ -151,7 +153,20 @@ final class RecordingController: @unchecked Sendable {
         }
 
         let presentationTime = CMTimeSubtract(rawTime, pausedAccumulated)
+
+        // Frames reach here from the compositor's GPU completion handler, one
+        // per encode, so their order is the order the GPU finished them rather
+        // than the order capture delivered them. A single inversion is enough to
+        // make `append` fail, and a failed append puts the writer into `.failed`
+        // permanently — the whole take is lost, not one frame of it. Dropping
+        // the late arrival costs 33 ms of footage and keeps the file.
+        if let lastAppendedTime, CMTimeCompare(presentationTime, lastAppendedTime) <= 0 {
+            framesDropped += 1
+            return
+        }
+
         if adaptor.append(pixels, withPresentationTime: presentationTime) {
+            lastAppendedTime = presentationTime
             framesAppended += 1
         } else {
             framesDropped += 1

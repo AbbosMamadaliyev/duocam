@@ -93,11 +93,16 @@ final class SimulatedCaptureEngine: CaptureEngine {
 
         guard needsRebuild else {
             remapRoles(from: previous)
+            // The synthetic frame scales by this, so a zoom change is visible in
+            // the simulator too — which is the only place the pills can be
+            // exercised at all.
+            animators[.primary]?.zoom = newConfiguration.primaryZoom
             return
         }
 
         emit(.statusChanged(.configuring))
         rebuildStreams()
+        animators[.primary]?.zoom = newConfiguration.primaryZoom
         try? await Task.sleep(for: .milliseconds(80))
 
         negotiatedQuality = NegotiatedQuality(

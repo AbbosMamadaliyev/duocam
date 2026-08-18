@@ -90,20 +90,19 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
 
     // MARK: Control cluster frames
 
-    /// Quality pill + control trio, plus the elapsed-timer row while recording.
-    /// Begins 8pt below the safe-area top inset (Doc 2 §3.3).
+    /// Quality pill + control trio, and the elapsed timer that shares that row
+    /// while recording. Begins 8pt below the safe-area top inset (Doc 2 §3.3).
     ///
-    /// The recording height matters: if this reported only the control row, the
-    /// top-centre snap zone would resolve to a position that clears the
-    /// controls but lands squarely on the timer — a control cluster the overlay
-    /// covers is still a covered control, whichever row it is on.
+    /// One row in both states. It used to grow by a second row during recording,
+    /// back when the timer was drawn beneath the controls; the timer is centred
+    /// in the control row itself now, so reserving that extra band would push
+    /// the overlay's top-centre resting place further down the frame for nothing.
     var topClusterFrame: CGRect {
-        let timerRow = isRecording ? DC.Size.timerHeight + DC.Spacing.grid : 0
-        return CGRect(
+        CGRect(
             x: 0,
             y: safeTop + DC.Spacing.grid,
             width: screenSize.width,
-            height: DC.Size.control + timerRow
+            height: DC.Size.control
         )
         .insetBy(dx: DC.Spacing.edgeMargin - Self.minimumClearance, dy: 0)
     }

@@ -15,6 +15,24 @@ nonisolated enum CameraSource: String, CaseIterable, Identifiable, Codable, Send
 
     var id: String { rawValue }
 
+    /// The lens a live device turns out to be.
+    ///
+    /// A stream's *source* is what was asked for; its device is what the engine
+    /// found to serve it, and the two can differ — a request for the plain rear
+    /// camera is served by whichever rear device covers the magnification in
+    /// hand. Anything measured about a lens has to be measured about the device
+    /// actually running, which is what this converts back to.
+    /// `nil` for a virtual device, which is several lenses rather than one.
+    init?(deviceType: AVCaptureDevice.DeviceType) {
+        switch deviceType {
+        case .builtInTrueDepthCamera: self = .front
+        case .builtInUltraWideCamera: self = .rearUltraWide
+        case .builtInWideAngleCamera: self = .rearWide
+        case .builtInTelephotoCamera: self = .rearTelephoto
+        default: return nil
+        }
+    }
+
     var deviceType: AVCaptureDevice.DeviceType {
         switch self {
         case .front: .builtInTrueDepthCamera

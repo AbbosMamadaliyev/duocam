@@ -234,28 +234,32 @@ private struct TopCluster: View {
     @Bindable var model: CameraViewModel
     let router: AppRouter
 
+    /// Doc 2 §4.2 places the elapsed readout in the horizontal centre of the top
+    /// cluster, "which is empty in the idle state". It used to take a second row
+    /// underneath instead, because in the idle state that centre is not empty:
+    /// the quality pill and the control trio leave under 60pt between them.
+    ///
+    /// But this row is never in the idle state while the readout exists. The
+    /// moment recording starts the quality pill, the torch and Settings all
+    /// leave — quality cannot be changed mid-take, and Settings would rebuild
+    /// the session — so the centre genuinely *is* empty and the readout can have
+    /// the position the design asked for. Dropping it to its own row also pushed
+    /// it into the frame, which is the one place a recording indicator should
+    /// never be.
+    ///
+    /// It is drawn as an overlay rather than as a row member so its width never
+    /// pushes the controls around: it is centred on the screen, not on whatever
+    /// space the controls left over. Reverses deviation D-3.
     var body: some View {
-        VStack(spacing: DC.Spacing.grid) {
-            controlRow
-
-            // Doc 2 §4.2 places the elapsed readout in the horizontal centre of
-            // the top cluster, "which is empty in the idle state". On a 440pt
-            // screen it is not empty enough: the quality pill plus the control
-            // trio — plus the conditional overlay-rotate control — leave under
-            // 60pt between them, and a 90pt timer pill drawn there lands behind
-            // the controls.
-            //
-            // Design principle 4 ("nothing important is ever covered") outranks
-            // the literal placement, so the readout takes its own centred row
-            // directly beneath. It is still top, still centred, and now never
-            // collides. Recorded as deviation D-3 in the build plan.
-            if model.isRecording {
-                ElapsedTimerPill(elapsed: model.elapsed, isPaused: model.isPaused)
-                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+        controlRow
+            .overlay {
+                if model.isRecording {
+                    ElapsedTimerPill(elapsed: model.elapsed, isPaused: model.isPaused)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                }
             }
-        }
-        .dcAnimation(DC.Motion.standard, value: model.isRecording)
-        .dcAnimation(DC.Motion.standard, value: model.configuration.layout)
+            .dcAnimation(DC.Motion.standard, value: model.isRecording)
+            .dcAnimation(DC.Motion.standard, value: model.configuration.layout)
     }
 
     /// `grid` rather than `controlGap` between these: four 44pt controls plus
@@ -264,16 +268,17 @@ private struct TopCluster: View {
     /// while giving the readout the width it needs.
     private var controlRow: some View {
         HStack(alignment: .top, spacing: DC.Spacing.grid) {
-            QualityPill(
-                quality: model.negotiatedQuality,
-                isDimmed: model.isRecording
-            ) {
-                if model.isRecording {
-                    model.toasts.show("Stop recording to change quality")
-                    HapticEngine.shared.error()
-                } else {
+            // Gone while recording rather than dimmed. It used to stay as a
+            // greyed-out `1080p │ 30 FPS`, which is a readout of something the
+            // user cannot change and already decided before pressing record —
+            // and it is the only thing standing between the elapsed timer and
+            // the centre of the row it now shares. A control that can neither be
+            // used nor acted on is chrome over the shot.
+            if !model.isRecording {
+                QualityPill(quality: model.negotiatedQuality) {
                     model.activeSheet = .quality
                 }
+                .transition(.scale.combined(with: .opacity))
             }
 
             Spacer(minLength: 0)

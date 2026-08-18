@@ -276,8 +276,13 @@ final class CameraViewModel {
             print("═══ lens switch test · before ═══")
             print(multiCam.hardwareSelfCheck())
 
-            for stop in engine.availableZoomStops(for: .primary) {
-                guard stop.source != configuration.primarySource else { continue }
+            // Every stop, up and back down, and then the two ends against each
+            // other. The ends are the interesting pair: skipping the middle stop
+            // is the one move that changes device *and* crosses a lens boundary
+            // inside the device being left, in both directions.
+            let stops = engine.availableZoomStops(for: .primary)
+            let extremes = [stops.first, stops.last, stops.first, stops.last].compactMap { $0 }
+            for stop in stops + stops.reversed().dropFirst() + extremes {
                 selectZoom(ZoomPillGroup.Stop(label: stop.label, zoomFactor: stop.zoomFactor))
                 try? await Task.sleep(for: .seconds(2))
                 print("═══ lens switch test · after \(stop.label) ═══")
@@ -457,8 +462,17 @@ final class CameraViewModel {
         }
     }
 
+    /// Which pill reads as chosen.
+    ///
+    /// Driven by the magnification rather than by the lens, so it settles the
+    /// instant the tap lands instead of waiting for the hardware to finish
+    /// changing lenses — and so it stays honest at magnifications no lens sits
+    /// exactly at, where the nearest stop is the truthful answer.
     var selectedZoomStop: String {
-        configuration.primarySource.zoomLabel
+        let zoom = configuration.primaryZoom
+        return zoomStops
+            .min { abs($0.zoomFactor - zoom) < abs($1.zoomFactor - zoom) }?
+            .id ?? configuration.primarySource.zoomLabel
     }
 
     func geometry(screenSize: CGSize, safeTop: CGFloat, safeBottom: CGFloat) -> LayoutGeometry {
@@ -835,31 +849,41 @@ final class CameraViewModel {
         }
     }
 
-    /// Each stop is a *lens*, not a magnification of the current one.
+    /// A stop is a *magnification*, and the lens is how the engine reaches it.
     ///
-    /// The factor used to be ramped on the outgoing device before the switch,
-    /// which cropped the frame the user was leaving and left that lens sitting
-    /// at the wrong zoom for the next time they came back to it. Selecting a
-    /// stop that belongs to another lens is purely a source change; the engine
-    /// starts the new lens at its own nominal 1×.
+    /// The distinction is the whole fix for the zoom that changed by going
+    /// black. A stop used to be a lens and nothing else, so tapping one was a
+    /// source change: teardown, rebuild, and a screen that cut from one field
+    /// of view to another with a black frame in between. Asking for a
+    /// magnification instead lets the engine ride the lens it already has to
+    /// meet the one taking over, and hand off between two identical frames.
+    ///
+    /// The lens is still named here, because only the view model knows what the
+    /// *other* stream is holding — and a rear + rear session cannot open a
+    /// second input on a device it already has open.
     func selectZoom(_ stop: ZoomPillGroup.Stop) {
         let source = engine.availableZoomStops(for: .primary)
             .first { $0.label == stop.label }?
             .source
 
-        if let source, source == configuration.secondarySource {
+        // One write, so the engine sees the lens and the magnification together
+        // and can plan a single continuous movement between them.
+        var updated = configuration
+
+        if let source, source == updated.secondarySource {
             // Rear + Rear, where the requested lens is already live as the
             // other stream. A session will not accept a second input for one
             // device, so this is a swap rather than a lens change: the
             // requested lens takes the screen and the current one moves to the
             // overlay. Assigning it to both roles instead fails `canAddInput`
             // and leaves the session with no streams at all.
-            configuration.swapStreams()
-        } else if let source, source != configuration.primarySource {
-            configuration.primarySource = source
-        } else if source == nil {
-            engine.setZoomFactor(stop.zoomFactor, for: .primary, ramped: true)
+            updated.swapStreams()
+        } else if let source {
+            updated.primarySource = source
         }
+        updated.primaryZoom = stop.zoomFactor
+
+        configuration = updated
         extinguishTorchIfUnavailable()
         HapticEngine.shared.sliderDetent()
     }
