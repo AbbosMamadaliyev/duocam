@@ -53,6 +53,8 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
     var isRecording: Bool = false
     var isDualMode: Bool = true
     var layout: LayoutType = .pipRounded
+    /// The shape of the recorded frame, which is also the shape of `previewRect`.
+    var aspectRatio: AspectRatio = .sixteenByNine
     /// Overlay width as a fraction of screen width, 0.25…0.5 (Doc 2 §5.5).
     var overlayWidthFraction: CGFloat = 0.32
     /// Whether the zoom pill row is on screen.
@@ -77,10 +79,43 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
     /// layer stack, not because the overlay is fenced away from it.
     static let overlayEdgeInset: CGFloat = 16
 
+    // MARK: The picture
+
+    /// The rect the live picture occupies on screen: the recorded frame,
+    /// letterboxed into the display.
+    ///
+    /// **Everything about the image is measured from this rect, not from the
+    /// screen.** The display is ~19.5:9 and the file is 16:9 or 4:3, so a
+    /// preview that filled the screen would be showing a differently-cropped
+    /// picture than the one being written — the sides of the recording were
+    /// never on screen at all. Confining the preview to a rect of the file's own
+    /// proportion is what makes "what you see is what you record" true, and it
+    /// is why the overlay's coordinates below are unit coordinates *of this
+    /// rect*: the compositor places the overlay in the canvas the same way.
+    ///
+    /// Fitted by whichever axis binds first. On every current phone that is the
+    /// width, but a 4:3 frame on a short, wide screen would bind on height, and
+    /// an overflowing preview would silently push the overlay off the canvas.
+    var previewRect: CGRect {
+        let target = aspectRatio.portraitAspect
+        var width = screenSize.width
+        var height = width / target
+        if height > screenSize.height {
+            height = screenSize.height
+            width = height * target
+        }
+        return CGRect(
+            x: (screenSize.width - width) / 2,
+            y: (screenSize.height - height) / 2,
+            width: width,
+            height: height
+        )
+    }
+
     // MARK: Overlay
 
     var overlaySize: CGSize {
-        let width = screenSize.width * overlayWidthFraction
+        let width = previewRect.width * overlayWidthFraction
         // `pipCircle` needs a square frame — a `Circle` in a 3:4 box inscribes
         // rather than fills, leaving stroke and content disagreeing about the
         // edge.
@@ -195,17 +230,20 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
     func basePosition(for zone: SnapZone) -> CGPoint {
         let size = overlaySize
         let margin = DC.Spacing.edgeMargin
+        let picture = previewRect
 
         let x: CGFloat = switch zone.horizontal {
-        case .leading: margin + size.width / 2
-        case .center: screenSize.width / 2
-        case .trailing: screenSize.width - margin - size.width / 2
+        case .leading: picture.minX + margin + size.width / 2
+        case .center: picture.midX
+        case .trailing: picture.maxX - margin - size.width / 2
         }
 
+        // The safe-area inset still matters at the top of the picture, where it
+        // overlaps it: on a 16:9 frame the notch sits inside the image.
         let y: CGFloat = switch zone.vertical {
-        case .top: safeTop + margin + size.height / 2
-        case .middle: screenSize.height / 2
-        case .bottom: screenSize.height - safeBottom - margin - size.height / 2
+        case .top: max(picture.minY, safeTop) + margin + size.height / 2
+        case .middle: picture.midY
+        case .bottom: min(picture.maxY, screenSize.height - safeBottom) - margin - size.height / 2
         }
 
         return CGPoint(x: x, y: y)
@@ -234,7 +272,7 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
             }
         }
 
-        return clampIntoScreen(point, size: size)
+        return clampIntoPicture(point, size: size)
     }
 
     func overlayRect(at center: CGPoint, size: CGSize) -> CGRect {
@@ -270,13 +308,18 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
         return point
     }
 
-    private func clampIntoScreen(_ center: CGPoint, size: CGSize) -> CGPoint {
+    private func clampIntoPicture(_ center: CGPoint, size: CGSize) -> CGPoint {
         let margin = DC.Spacing.edgeMargin
+        let picture = previewRect
+
+        let minX = picture.minX + margin + size.width / 2
+        let maxX = picture.maxX - margin - size.width / 2
+        let minY = max(picture.minY, safeTop) + margin + size.height / 2
+        let maxY = min(picture.maxY, screenSize.height - safeBottom) - margin - size.height / 2
+
         return CGPoint(
-            x: center.x.clamped(to: (margin + size.width / 2)...(screenSize.width - margin - size.width / 2)),
-            y: center.y.clamped(
-                to: (safeTop + margin + size.height / 2)...(screenSize.height - safeBottom - margin - size.height / 2)
-            )
+            x: center.x.clamped(to: min(minX, maxX)...max(minX, maxX)),
+            y: center.y.clamped(to: min(minY, maxY)...max(minY, maxY))
         )
     }
 
@@ -292,19 +335,26 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
         resolvedPosition(for: .topTrailing)
     }
 
-    /// The overlay's centre for a stored unit position, clamped into the screen.
+    /// The overlay's centre for a stored unit position, clamped into the
+    /// picture.
     ///
     /// `nil` means "never moved", which resolves to `defaultOverlayCentre`.
     func overlayCentre(for unit: CGPoint?) -> CGPoint {
         guard let unit else { return clampOverlayCentre(defaultOverlayCentre) }
+        let picture = previewRect
         return clampOverlayCentre(CGPoint(
-            x: unit.x * screenSize.width,
-            y: unit.y * screenSize.height
+            x: picture.minX + unit.x * picture.width,
+            y: picture.minY + unit.y * picture.height
         ))
     }
 
     /// Confines a centre point so the overlay keeps `overlayEdgeInset` of air on
-    /// every screen edge — the only constraint on a free drag.
+    /// every edge **of the picture** — the only constraint on a free drag.
+    ///
+    /// The picture rather than the screen, because the letterbox bands are not
+    /// recorded: an overlay dragged into one would be visible on screen and
+    /// absent from the file, which is the exact class of surprise this app's
+    /// preview is supposed to make impossible.
     ///
     /// The ranges are built with `min`/`max` rather than assumed ordered: an
     /// overlay resized to 50% of the width is wider than the gutter allows on a
@@ -312,11 +362,12 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
     func clampOverlayCentre(_ centre: CGPoint) -> CGPoint {
         let size = overlaySize
         let inset = Self.overlayEdgeInset
+        let picture = previewRect
 
-        let minX = inset + size.width / 2
-        let maxX = screenSize.width - inset - size.width / 2
-        let minY = inset + size.height / 2
-        let maxY = screenSize.height - inset - size.height / 2
+        let minX = picture.minX + inset + size.width / 2
+        let maxX = picture.maxX - inset - size.width / 2
+        let minY = picture.minY + inset + size.height / 2
+        let maxY = picture.maxY - inset - size.height / 2
 
         return CGPoint(
             x: centre.x.clamped(to: min(minX, maxX)...max(minX, maxX)),
@@ -324,12 +375,15 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
         )
     }
 
-    /// Screen point → unit position, so a stored placement survives rotation,
-    /// a resize, and a different device class.
+    /// Screen point → unit position **within the picture**, which is the
+    /// coordinate space the compositor lays the overlay out in. Storing it in
+    /// these units is what lets a placement survive a rotation, a resize, a
+    /// different device class — and an aspect-ratio change.
     func unitCentre(for point: CGPoint) -> CGPoint {
-        CGPoint(
-            x: point.x / max(screenSize.width, 1),
-            y: point.y / max(screenSize.height, 1)
+        let picture = previewRect
+        return CGPoint(
+            x: (point.x - picture.minX) / max(picture.width, 1),
+            y: (point.y - picture.minY) / max(picture.height, 1)
         )
     }
 }

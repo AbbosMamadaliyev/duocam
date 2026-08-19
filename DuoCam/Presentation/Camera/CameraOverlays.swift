@@ -19,7 +19,9 @@ struct GridOverlay: View {
             }
             .stroke(DC.Color.chromePrimary.opacity(0.25), lineWidth: 0.5)
         }
-        .ignoresSafeArea()
+        // No `ignoresSafeArea`: the caller sizes this to the picture, and a grid
+        // that expanded past that frame would be drawing thirds of the display
+        // rather than thirds of the frame.
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }

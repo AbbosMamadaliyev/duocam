@@ -148,6 +148,9 @@ extension DC {
         static let bottomControl: CGFloat = 48
         /// Shutter outer ring.
         static let shutterOuter: CGFloat = 76
+        /// The photo shutter beside it — deliberately smaller than the record
+        /// button's ring, so the row still has one obvious centre.
+        static let photoShutter: CGFloat = 56
         /// Shutter inner shape at rest.
         static let shutterInner: CGFloat = 64
         /// Shutter inner shape while recording.

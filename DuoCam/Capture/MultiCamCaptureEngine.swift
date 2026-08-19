@@ -275,6 +275,11 @@ final class MultiCamCaptureEngine: CaptureEngine {
             remapRoles(for: newConfiguration)
             applyMirroring()
 
+            // A new canvas shape reaches both the preview and the file through
+            // the uniforms, and through nothing else: no input, output or
+            // connection changes, so the streams never stop.
+            if newConfiguration.aspectRatio != previous.aspectRatio { refreshUniforms() }
+
             // A magnification can outgrow the device serving it: the dual wide
             // covers 0.5–1×, the dual 1–3×, and asking one of them for the
             // other's half of the range means changing device even though the
@@ -2100,11 +2105,15 @@ final class MultiCamCaptureEngine: CaptureEngine {
         compositionState.update(uniforms: CompositionUniforms(inputs), outputSize: outputSize)
     }
 
-    /// Portrait output at the negotiated tier. The app is portrait-only until
-    /// Doc 3 Phase 8, so the composited frame is the tier's dimensions swapped.
+    /// Portrait output at the negotiated tier, in the shape the user chose.
+    ///
+    /// The app is portrait-only until Doc 3 Phase 8, so the canvas is always
+    /// taller than it is wide; `AspectRatio` decides by how much. 16:9 at 1080p
+    /// is the tier's own dimensions swapped, 4:3 is 1080×1440 — a shorter
+    /// canvas cropped from the same sensor frame, which is why the change costs
+    /// a uniform update and not a session rebuild.
     private func outputSize(for resolution: Resolution) -> CGSize {
-        let dims = resolution.dimensions
-        return CGSize(width: CGFloat(dims.height), height: CGFloat(dims.width))
+        configuration.aspectRatio.outputSize(for: resolution)
     }
 
     // MARK: Phase F — photo, manual controls, torch, lens switching

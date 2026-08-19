@@ -157,6 +157,15 @@ enum DebugFlags {
         string("DCMode").flatMap(CaptureMode.init(rawValue:))
     }
 
+    /// Force a frame shape: `sixteenByNine`, `fourByThree`.
+    ///
+    /// The control that changes it is a single tap in the top row, which is
+    /// precisely the input the simulator cannot be scripted into — and the whole
+    /// claim being verified is geometric, so it has to be *seen*.
+    static var forcedAspectRatio: AspectRatio? {
+        string("DCAspect").flatMap(AspectRatio.init(rawValue:))
+    }
+
     /// Present the paywall on launch.
     static var opensPaywall: Bool { flag("DCPaywall") }
 

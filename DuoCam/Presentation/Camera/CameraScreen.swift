@@ -44,7 +44,15 @@ struct CameraScreen: View {
                     .zIndex(DC.Layer.overlay)
 
                 if model.configuration.showsGrid {
-                    GridOverlay().zIndex(DC.Layer.transient)
+                    // Thirds of the *frame*, not of the display. A grid drawn
+                    // over the letterbox bands would put its lines somewhere the
+                    // recording has no equivalent of.
+                    GridOverlay()
+                        .frame(
+                            width: geometry.previewRect.width,
+                            height: geometry.previewRect.height
+                        )
+                        .zIndex(DC.Layer.transient)
                 }
 
                 if model.configuration.showsLevel {
@@ -120,19 +128,29 @@ struct CameraScreen: View {
 
     // MARK: Previews
 
+    /// The picture, at the shape it is recorded in.
+    ///
+    /// Confined to `geometry.previewRect` rather than full-bleed. Design
+    /// principle 1 is *"the preview is the interface"*, and a preview stretched
+    /// to a 19.5:9 display while the file is written at 16:9 is not that
+    /// interface: it crops the sides the recording keeps, so the user frames one
+    /// picture and receives another. The letterbox bands are black, the chrome
+    /// floats over both, and the two now show the identical crop.
     @ViewBuilder
     private func primaryPreview(geometry: LayoutGeometry) -> some View {
         let layout = model.configuration.layout
+        let picture = geometry.previewRect
 
         if layout.isSplit, model.hasSecondaryStream {
             SplitPreview(model: model, geometry: geometry)
+                .frame(width: picture.width, height: picture.height)
         } else {
             CameraPreviewView(source: model.engine.previewSource(for: .primary))
-                .ignoresSafeArea()
+                .frame(width: picture.width, height: picture.height)
                 .contentShape(Rectangle())
-                .gesture(previewTapGesture(geometry: geometry))
+                .gesture(previewTapGesture(picture: picture))
                 .simultaneousGesture(previewDoubleTapGesture)
-                .simultaneousGesture(previewLongPressGesture(geometry: geometry))
+                .simultaneousGesture(previewLongPressGesture(picture: picture))
         }
     }
 
@@ -177,12 +195,22 @@ struct CameraScreen: View {
 
     // MARK: Preview gestures (Doc 2 §8)
 
-    private func previewTapGesture(geometry: LayoutGeometry) -> some Gesture {
+    /// The tap arrives in the preview's own coordinates, which are the picture's.
+    ///
+    /// Two conversions come out of that, and they are not the same one: the
+    /// engine wants the point normalised against the *picture* — a tap 40% down
+    /// the frame must focus 40% down the frame, not 40% down a display that is
+    /// taller than the frame — while the reticle is drawn in the full-screen
+    /// ZStack and needs the letterbox offset added back.
+    private func previewTapGesture(picture: CGRect) -> some Gesture {
         SpatialTapGesture()
             .onEnded { value in
                 model.focus(
-                    at: value.location,
-                    normalized: normalize(value.location, in: geometry),
+                    at: CGPoint(
+                        x: value.location.x + picture.minX,
+                        y: value.location.y + picture.minY
+                    ),
+                    normalized: normalize(value.location, in: picture.size),
                     in: .primary
                 )
             }
@@ -194,20 +222,24 @@ struct CameraScreen: View {
         }
     }
 
-    private func previewLongPressGesture(geometry: LayoutGeometry) -> some Gesture {
+    private func previewLongPressGesture(picture: CGRect) -> some Gesture {
         LongPressGesture(minimumDuration: 0.5)
             .onEnded { _ in
-                // Long press locks AE/AF at the screen centre when there is no
-                // spatial information — `LongPressGesture` carries no location.
-                let centre = CGPoint(x: geometry.screenSize.width / 2, y: geometry.screenSize.height / 2)
-                model.lockFocus(at: centre, normalized: CGPoint(x: 0.5, y: 0.5), in: .primary)
+                // Long press locks AE/AF at the centre of the frame when there
+                // is no spatial information — `LongPressGesture` carries no
+                // location.
+                model.lockFocus(
+                    at: CGPoint(x: picture.midX, y: picture.midY),
+                    normalized: CGPoint(x: 0.5, y: 0.5),
+                    in: .primary
+                )
             }
     }
 
-    private func normalize(_ point: CGPoint, in geometry: LayoutGeometry) -> CGPoint {
+    private func normalize(_ point: CGPoint, in size: CGSize) -> CGPoint {
         CGPoint(
-            x: (point.x / geometry.screenSize.width).clamped(to: 0...1),
-            y: (point.y / geometry.screenSize.height).clamped(to: 0...1)
+            x: (point.x / max(size.width, 1)).clamped(to: 0...1),
+            y: (point.y / max(size.height, 1)).clamped(to: 0...1)
         )
     }
 
@@ -283,24 +315,25 @@ private struct TopCluster: View {
 
             Spacer(minLength: 0)
 
-            // Doc 2 §4.2: the overlay-rotate control appears only for PiP
-            // layouts, because in a split there is nothing to rotate.
-            if model.configuration.layout.supportsOverlayRotation, model.hasSecondaryStream {
-                CircularControlButton(
-                    systemImage: "rectangle.portrait.rotate",
-                    accessibilityLabel: "Rotate overlay",
-                    accessibilityHint: "Switches the overlay between portrait and landscape"
-                ) {
-                    rotateOverlayAspect()
+            // The frame shape, first in the trailing cluster.
+            //
+            // Two controls used to lead this row and neither earned the space.
+            // The overlay-rotate control changed the *overlay's* proportions,
+            // which the pinch and the Layout sheet both already do, and it
+            // appeared and vanished with the layout — a control that comes and
+            // goes teaches the user to stop looking for anything here. The
+            // Adjustments control opened a sheet of manual exposure, ISO,
+            // shutter, white balance and focus: a settings screen wearing a
+            // camera control's clothes, given a permanent slot over the picture
+            // for a panel most takes never touch. It lives in Settings now.
+            //
+            // What replaced them is the one thing on this row the user changes
+            // per shot and can see the result of instantly.
+            if !model.isRecording {
+                AspectRatioButton(ratio: model.configuration.aspectRatio) {
+                    model.toggleAspectRatio()
                 }
                 .transition(.scale.combined(with: .opacity))
-            }
-
-            CircularControlButton(
-                systemImage: "slider.horizontal.3",
-                accessibilityLabel: "Adjustments"
-            ) {
-                model.activeSheet = .adjustments
             }
 
             // Doc 2 §4.2 gives this slot to flash, and flash is only read where
@@ -357,11 +390,39 @@ private struct TopCluster: View {
             }
         }
     }
+}
 
-    /// Toggles between the two PiP aspect ratios.
-    private func rotateOverlayAspect() {
-        let next: LayoutType = model.configuration.layout == .pipTall ? .pipRounded : .pipTall
-        model.select(layout: next)
+// MARK: - Aspect ratio control
+
+/// 16:9 ↔ 4:3, on one tap.
+///
+/// Text rather than a glyph: SF Symbols has `aspectratio`, and it says "this is
+/// about proportions" without saying *which* proportion is live — which is the
+/// only thing the user needs from this control at a glance.
+///
+/// Built as a plain `Button` with `.buttonStyle(.plain)` and nothing layered on
+/// top, for the reason spelled out at length in `CircularControlButton`: every
+/// version of these chrome controls that added a `ButtonStyle`, a
+/// `contentShape` or a gesture composite lost the single tap.
+private struct AspectRatioButton: View {
+    let ratio: AspectRatio
+    var size: CGFloat = DC.Size.control
+    var action: () -> Void = {}
+
+    var body: some View {
+        Button(action: action) {
+            Text(ratio.displayName)
+                .font(DC.Font.pillLabel)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .foregroundStyle(DC.Color.chromePrimary)
+                .frame(width: size, height: size)
+                .dcSurface(in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Aspect ratio")
+        .accessibilityValue(ratio.displayName)
+        .accessibilityHint("Switches the frame between 16 by 9 and 4 by 3")
     }
 }
 
@@ -396,42 +457,19 @@ private struct BottomCluster: View {
                         .transition(.opacity)
                 }
 
-                // Doc 2 §4.3 fixes these positions exactly: gallery at
-                // `edgeMargin`, shutter centred, swap at `center + 84`, layout
-                // at `width - edgeMargin - 48`. Laying them out with `Spacer`s
-                // instead lets the swap control drift into the shutter as the
-                // screen width changes — which is how it ends up overlapping
-                // on one device class and not another.
+                // Five fixed positions rather than `Spacer`s, for the reason
+                // Doc 2 §4.3 gives: spacers let the inner controls drift into
+                // the shutter as the screen width changes, which is how a row
+                // overlaps on one device class and not another. Every offset
+                // below is measured from the nearest screen edge, so the
+                // spacing between neighbours is a constant.
                 //
-                // The swap control is the one exception, and it is measured from
-                // the *right* rather than from the centre: at `center + 84` its
-                // 48pt disc lands half a point from the layout control's on a
-                // 393pt screen, so the two read as a single fused capsule. It now
-                // sits one `controlGap` inboard of layout, which keeps the pair
-                // grouped as the two "what am I looking at" controls while
-                // leaving 30pt of air to the shutter. Deviation D-4.
+                // Left to right: gallery · layout · record · photo · swap. The
+                // two shutters sit either side of centre because they are the
+                // two things this row exists for, and the four utility controls
+                // are pushed to the edges around them. Deviation D-4.
                 GalleryButton(model: model)
                     .offset(x: -halfWidth + DC.Spacing.edgeMargin + DC.Size.bottomControl / 2)
-
-                MorphingShutter(
-                    state: model.shutterState,
-                    onTap: { model.triggerShutter() }
-                )
-                .gesture(shutterSwipeGesture)
-
-                CircularControlButton(
-                    systemImage: "arrow.triangle.2.circlepath.camera",
-                    size: DC.Size.bottomControl,
-                    isEnabled: model.hasSecondaryStream,
-                    accessibilityLabel: "Swap cameras",
-                    accessibilityHint: "Swaps which camera fills the screen"
-                ) {
-                    model.swapStreams()
-                }
-                .offset(
-                    x: halfWidth - DC.Spacing.edgeMargin
-                        - DC.Size.bottomControl * 1.5 - DC.Spacing.controlGap
-                )
 
                 CircularControlButton(
                     systemImage: "rectangle.split.2x1",
@@ -441,6 +479,42 @@ private struct BottomCluster: View {
                     accessibilityHint: "Choose how the two streams are arranged"
                 ) {
                     model.activeSheet = .layout
+                }
+                .offset(
+                    x: -halfWidth + DC.Spacing.edgeMargin
+                        + DC.Size.bottomControl * 1.5 + DC.Spacing.controlGap
+                )
+
+                // The red button is video and only video now. It kept the morph
+                // — idle circle to recording square — because that is what says
+                // a take is running; what it lost is having to also stand for
+                // Photo, which is what made a single button ambiguous about
+                // which mode a tap would act in.
+                MorphingShutter(
+                    state: model.shutterState,
+                    onTap: { model.triggerRecord() }
+                )
+
+                PhotoShutterButton(
+                    isEnabled: model.isPhotoButtonEnabled,
+                    capturesDuringRecording: model.isRecording
+                ) {
+                    model.triggerPhoto()
+                }
+                .offset(
+                    x: halfWidth - DC.Spacing.edgeMargin
+                        - DC.Size.bottomControl - DC.Spacing.controlGap
+                        - DC.Size.photoShutter / 2
+                )
+
+                CircularControlButton(
+                    systemImage: "arrow.triangle.2.circlepath.camera",
+                    size: DC.Size.bottomControl,
+                    isEnabled: model.hasSecondaryStream,
+                    accessibilityLabel: "Swap cameras",
+                    accessibilityHint: "Swaps which camera fills the screen"
+                ) {
+                    model.swapStreams()
                 }
                 .offset(x: halfWidth - DC.Spacing.edgeMargin - DC.Size.bottomControl / 2)
             }
@@ -466,15 +540,46 @@ private struct BottomCluster: View {
         .dcAnimation(DC.Motion.fade, value: model.areZoomPillsVisible)
         .dcAnimation(DC.Motion.fade, value: model.subModeLabelVisible)
     }
+}
 
-    /// Doc 2 §4.4: Photo ↔ Video is a swipe on the shutter region, not a row of
-    /// its own. This is what removes the prototype's two-shutter ambiguity (P4).
-    private var shutterSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 30)
-            .onEnded { value in
-                guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                model.setPhotoVideoMode(value.translation.width < 0 ? .photo : .video)
+// MARK: - Photo shutter
+
+/// The white button: one still, one tap.
+///
+/// Doc 2 §4.4 made Photo ↔ Video a *swipe* on a single morphing shutter,
+/// specifically to avoid the prototype's two side-by-side circles (problem P4).
+/// The objection there was real but it was about ambiguity, not about count:
+/// two identical discs with no indication of which was armed. Two visibly
+/// different buttons that each do exactly one thing are not ambiguous — the red
+/// one records, the white one takes a picture — and they cost nothing to
+/// discover, where a swipe on an unmarked control costs everything.
+///
+/// During a take it keeps working, as the full-resolution still capture
+/// Doc 2 §7.2 asks for. That is the same action, not a different one wearing
+/// the same button, which is why the appearance does not change.
+private struct PhotoShutterButton: View {
+    let isEnabled: Bool
+    let capturesDuringRecording: Bool
+    var action: () -> Void = {}
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .strokeBorder(
+                        isEnabled ? DC.Color.chromePrimary : DC.Color.chromeTertiary,
+                        lineWidth: 2.5
+                    )
+                Circle()
+                    .fill(isEnabled ? DC.Color.chromePrimary : DC.Color.chromeTertiary)
+                    .padding(5)
             }
+            .frame(width: DC.Size.photoShutter, height: DC.Size.photoShutter)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel(capturesDuringRecording ? "Capture still" : "Take photo")
+        .accessibilityValue(capturesDuringRecording ? "Recording continues" : "")
     }
 }
 
@@ -483,45 +588,27 @@ private struct GalleryButton: View {
 
     var body: some View {
         Button {
-            // Doc 2 §7.4: gallery access is disabled during recording, where
-            // this slot becomes the still-capture button instead.
-            if model.isRecording {
-                model.captureStillDuringVideo()
-            } else {
-                model.isShowingGallery = true
-            }
+            model.isShowingGallery = true
         } label: {
-            // Doc 2 §7.2: during recording this slot becomes a still-capture
-            // button rather than a way out of the recording screen.
+            // A circle, like every other control in this row. It was the one
+            // rounded square among four discs, which read as an element from a
+            // different screen that had drifted in.
             //
-            // With a camera glyph in it, not bare: an unlabelled white disc in
-            // the slot that held the gallery a second ago says nothing about
-            // what it now does, and the one guess it invites — "back to my
-            // library" — is the opposite of what it does.
-            Group {
-                if model.isRecording {
-                    Circle()
-                        .fill(DC.Color.chromePrimary)
-                        .frame(width: 40, height: 40)
-                        .overlay {
-                            Image(systemName: "camera.fill")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(.black)
-                        }
-                } else {
-                    RoundedRectangle.dc(DC.Radius.thumbnail)
-                        .fill(DC.Color.chromeTertiary.opacity(0.5))
-                        .frame(width: DC.Size.bottomControl, height: DC.Size.bottomControl)
-                        .overlay {
-                            Image(systemName: "photo.on.rectangle")
-                                .font(.system(size: 18, weight: .medium))
-                                .foregroundStyle(DC.Color.chromePrimary)
-                        }
-                }
-            }
+            // It also no longer turns into a still-capture button during a take.
+            // That reassignment existed because there was nowhere else to put
+            // the still; now there is a dedicated white shutter two slots over,
+            // and a control that silently becomes a different control is only
+            // ever worth it when nothing else can do the job.
+            Image(systemName: "photo.on.rectangle")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(model.isRecording ? DC.Color.chromeTertiary : DC.Color.chromePrimary)
+                .frame(width: DC.Size.bottomControl, height: DC.Size.bottomControl)
+                .dcSurface(in: Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(model.isRecording ? "Capture still" : "Gallery")
+        // Doc 2 §7.4: the library is not a place to be sent mid-take.
+        .disabled(model.isRecording)
+        .accessibilityLabel("Gallery")
         .dcAnimation(DC.Motion.standard, value: model.isRecording)
     }
 }
@@ -624,7 +711,8 @@ private struct SplitPreview: View {
                     .offset(y: split)
             }
         }
-        .ignoresSafeArea()
+        // Sized by the caller to the picture, so the split divides the recorded
+        // frame at the same ratio the file does.
         .dcAnimation(DC.Motion.layout, value: model.splitRatio)
     }
 }

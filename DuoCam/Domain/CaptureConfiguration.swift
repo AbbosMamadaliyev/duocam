@@ -32,7 +32,16 @@ nonisolated struct CaptureConfiguration: Equatable, Codable, Sendable {
     /// the graph rebuilt.
     var primaryZoom: CGFloat = 1
 
-    var photoVideoMode: PhotoVideoMode = .video
+    /// The shape of the recorded frame. Purely a compositing decision — the
+    /// canvas changes size, the session does not change at all — which is why
+    /// it is absent from `requiresSessionReconfiguration` and can be toggled
+    /// with no black frame in between.
+    var aspectRatio: AspectRatio = .sixteenByNine
+
+    /// Photo is the default: the shutter a camera app opens on should be the
+    /// one that cannot lose anything if the user is wrong about which mode
+    /// they are in.
+    var photoVideoMode: PhotoVideoMode = .photo
     var flashMode: FlashMode = .off
     var isTorchOn: Bool = false
     var mirrorsFrontCamera: Bool = true

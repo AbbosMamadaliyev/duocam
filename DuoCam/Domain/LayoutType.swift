@@ -48,8 +48,4 @@ nonisolated enum LayoutType: String, CaseIterable, Identifiable, Codable, Sendab
 
     /// `pipCircle` clips to a `Circle`; the rest use a continuous rounded rect.
     var overlayIsCircular: Bool { self == .pipCircle }
-
-    /// The overlay-rotate control only appears for PiP layouts — in a split it
-    /// has nothing to rotate (Doc 2 §4.2, "conditional fourth control").
-    var supportsOverlayRotation: Bool { isPiP }
 }

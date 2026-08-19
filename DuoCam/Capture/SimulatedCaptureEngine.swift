@@ -97,6 +97,9 @@ final class SimulatedCaptureEngine: CaptureEngine {
             // the simulator too — which is the only place the pills can be
             // exercised at all.
             animators[.primary]?.zoom = newConfiguration.primaryZoom
+            // A new canvas shape reaches the recording through the uniforms and
+            // nothing else — no stream is rebuilt for it.
+            if newConfiguration.aspectRatio != previous.aspectRatio { refreshUniforms() }
             return
         }
 
@@ -401,8 +404,7 @@ final class SimulatedCaptureEngine: CaptureEngine {
     }
 
     private var outputSize: CGSize {
-        let dims = configuration.quality.resolution.dimensions
-        return CGSize(width: CGFloat(dims.height), height: CGFloat(dims.width))
+        configuration.aspectRatio.outputSize(for: configuration.quality.resolution)
     }
 
     // MARK: Emit

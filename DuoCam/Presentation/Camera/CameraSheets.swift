@@ -63,10 +63,36 @@ struct LayoutSheet: View {
 
 // MARK: - Adjustments sheet (Doc 2 §6.2)
 
+/// The manual controls, as a sheet.
+///
+/// Nothing in the camera chrome opens this any more — the controls live inside
+/// Settings, one push down, and this wrapper survives for the `-forceSheet
+/// adjustments` debug flag, which is the only way to reach that screen in a
+/// state the simulator cannot be tapped into.
+struct AdjustmentsSheet: View {
+    @Bindable var model: CameraViewModel
+
+    var body: some View {
+        ScrollView {
+            ManualControls(model: model)
+                .padding(.horizontal, DC.Spacing.edgeMargin)
+                .padding(.vertical, 20)
+        }
+        .presentationDetents([.height(280), .medium, .large])
+        .presentationBackground(.regularMaterial)
+        .presentationDragIndicator(.visible)
+        .presentationBackgroundInteraction(.enabled)
+    }
+}
+
 /// Because there are two live streams, the first row is a stream selector.
 /// Every control below applies to whichever stream is selected — without that,
 /// "exposure" would be ambiguous the moment a second camera exists.
-struct AdjustmentsSheet: View {
+///
+/// Presentation-free on purpose: it is pushed inside the Settings navigation
+/// stack *and* presented as a sheet, and `presentationDetents` applied from a
+/// pushed view would resize the sheet it was pushed inside.
+struct ManualControls: View {
     @Bindable var model: CameraViewModel
 
     @State private var stream: StreamRole = .primary
@@ -81,114 +107,106 @@ struct AdjustmentsSheet: View {
     @State private var focusAuto = true
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 22) {
-                if model.hasSecondaryStream {
-                    CustomSegmentedControl(
-                        options: StreamRole.allCases,
-                        selection: $stream,
-                        title: \.displayName,
-                        height: 36,
-                        accessibilityLabel: "Stream"
+        VStack(spacing: 22) {
+            if model.hasSecondaryStream {
+                CustomSegmentedControl(
+                    options: StreamRole.allCases,
+                    selection: $stream,
+                    title: \.displayName,
+                    height: 36,
+                    accessibilityLabel: "Stream"
+                )
+            }
+
+            CameraSlider(
+                title: "Exposure",
+                value: $exposure,
+                range: -2...2,
+                detent: 0,
+                format: { String(format: "%+.1f EV", $0) }
+            )
+            .onChange(of: exposure) { _, new in
+                model.applyManualControl(.exposureBias(Float(new)), to: stream)
+            }
+
+            CameraSlider(
+                title: "ISO",
+                value: $iso,
+                range: 32...3200,
+                format: { String(format: "%.0f", $0) },
+                autoLabel: "AUTO",
+                isAuto: isoAuto,
+                onAutoToggle: {
+                    isoAuto.toggle()
+                    model.applyManualControl(.iso(isoAuto ? nil : Float(iso)), to: stream)
+                }
+            )
+            .onChange(of: iso) { _, new in
+                guard !isoAuto else { return }
+                model.applyManualControl(.iso(Float(new)), to: stream)
+            }
+
+            CameraSlider(
+                title: "Shutter",
+                value: $shutter,
+                range: 4...2000,
+                format: { "1/\(Int($0))" },
+                autoLabel: "AUTO",
+                isAuto: shutterAuto,
+                onAutoToggle: {
+                    shutterAuto.toggle()
+                    model.applyManualControl(.shutterSpeed(shutterAuto ? nil : shutter), to: stream)
+                }
+            )
+            .onChange(of: shutter) { _, new in
+                guard !shutterAuto else { return }
+                model.applyManualControl(.shutterSpeed(new), to: stream)
+            }
+
+            CameraSlider(
+                title: "White balance",
+                value: $whiteBalance,
+                range: 2000...8000,
+                detent: 5200,
+                format: { "\(Int($0))K" },
+                autoLabel: "AWB",
+                isAuto: whiteBalanceAuto,
+                onAutoToggle: {
+                    whiteBalanceAuto.toggle()
+                    model.applyManualControl(
+                        .whiteBalance(whiteBalanceAuto ? nil : Float(whiteBalance)), to: stream
                     )
                 }
-
-                CameraSlider(
-                    title: "Exposure",
-                    value: $exposure,
-                    range: -2...2,
-                    detent: 0,
-                    format: { String(format: "%+.1f EV", $0) }
-                )
-                .onChange(of: exposure) { _, new in
-                    model.applyManualControl(.exposureBias(Float(new)), to: stream)
-                }
-
-                CameraSlider(
-                    title: "ISO",
-                    value: $iso,
-                    range: 32...3200,
-                    format: { String(format: "%.0f", $0) },
-                    autoLabel: "AUTO",
-                    isAuto: isoAuto,
-                    onAutoToggle: {
-                        isoAuto.toggle()
-                        model.applyManualControl(.iso(isoAuto ? nil : Float(iso)), to: stream)
-                    }
-                )
-                .onChange(of: iso) { _, new in
-                    guard !isoAuto else { return }
-                    model.applyManualControl(.iso(Float(new)), to: stream)
-                }
-
-                CameraSlider(
-                    title: "Shutter",
-                    value: $shutter,
-                    range: 4...2000,
-                    format: { "1/\(Int($0))" },
-                    autoLabel: "AUTO",
-                    isAuto: shutterAuto,
-                    onAutoToggle: {
-                        shutterAuto.toggle()
-                        model.applyManualControl(.shutterSpeed(shutterAuto ? nil : shutter), to: stream)
-                    }
-                )
-                .onChange(of: shutter) { _, new in
-                    guard !shutterAuto else { return }
-                    model.applyManualControl(.shutterSpeed(new), to: stream)
-                }
-
-                CameraSlider(
-                    title: "White balance",
-                    value: $whiteBalance,
-                    range: 2000...8000,
-                    detent: 5200,
-                    format: { "\(Int($0))K" },
-                    autoLabel: "AWB",
-                    isAuto: whiteBalanceAuto,
-                    onAutoToggle: {
-                        whiteBalanceAuto.toggle()
-                        model.applyManualControl(
-                            .whiteBalance(whiteBalanceAuto ? nil : Float(whiteBalance)), to: stream
-                        )
-                    }
-                )
-                .onChange(of: whiteBalance) { _, new in
-                    guard !whiteBalanceAuto else { return }
-                    model.applyManualControl(.whiteBalance(Float(new)), to: stream)
-                }
-
-                CameraSlider(
-                    title: "Focus",
-                    value: $focus,
-                    range: 0...1,
-                    format: { String(format: "%.2f", $0) },
-                    autoLabel: "AF",
-                    isAuto: focusAuto,
-                    onAutoToggle: {
-                        focusAuto.toggle()
-                        model.applyManualControl(.focus(focusAuto ? nil : Float(focus)), to: stream)
-                    }
-                )
-                .onChange(of: focus) { _, new in
-                    guard !focusAuto else { return }
-                    model.applyManualControl(.focus(Float(new)), to: stream)
-                }
-
-                Button("Reset") {
-                    reset()
-                }
-                .font(DC.Font.sheetBody)
-                .foregroundStyle(DC.Color.accent)
-                .padding(.top, 4)
+            )
+            .onChange(of: whiteBalance) { _, new in
+                guard !whiteBalanceAuto else { return }
+                model.applyManualControl(.whiteBalance(Float(new)), to: stream)
             }
-            .padding(.horizontal, DC.Spacing.edgeMargin)
-            .padding(.vertical, 20)
+
+            CameraSlider(
+                title: "Focus",
+                value: $focus,
+                range: 0...1,
+                format: { String(format: "%.2f", $0) },
+                autoLabel: "AF",
+                isAuto: focusAuto,
+                onAutoToggle: {
+                    focusAuto.toggle()
+                    model.applyManualControl(.focus(focusAuto ? nil : Float(focus)), to: stream)
+                }
+            )
+            .onChange(of: focus) { _, new in
+                guard !focusAuto else { return }
+                model.applyManualControl(.focus(Float(new)), to: stream)
+            }
+
+            Button("Reset") {
+                reset()
+            }
+            .font(DC.Font.sheetBody)
+            .foregroundStyle(DC.Color.accent)
+            .padding(.top, 4)
         }
-        .presentationDetents([.height(280), .medium, .large])
-        .presentationBackground(.regularMaterial)
-        .presentationDragIndicator(.visible)
-        .presentationBackgroundInteraction(.enabled)
     }
 
     private func reset() {
@@ -377,6 +395,22 @@ struct SettingsPlaceholderSheet: View {
                         }
                     }
                     Toggle("Save to Photos", isOn: $model.savesToPhotoLibrary)
+                }
+
+                // Moved out of the camera chrome, where it held a permanent slot
+                // over the picture. Exposure, ISO, shutter, white balance and
+                // focus are a setup decision — made once for a scene, rarely
+                // mid-shot — and this is where setup decisions live.
+                Section("Manual") {
+                    NavigationLink("Manual controls") {
+                        ScrollView {
+                            ManualControls(model: model)
+                                .padding(.horizontal, DC.Spacing.edgeMargin)
+                                .padding(.vertical, 20)
+                        }
+                        .navigationTitle("Manual controls")
+                        .navigationBarTitleDisplayMode(.inline)
+                    }
                 }
 
                 Section("Lenses") {

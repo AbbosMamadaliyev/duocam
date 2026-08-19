@@ -231,6 +231,9 @@ final class CameraViewModel {
         if let layout = DebugFlags.forcedLayout {
             configuration.layout = layout
         }
+        if let aspectRatio = DebugFlags.forcedAspectRatio {
+            configuration.aspectRatio = aspectRatio
+        }
         if DebugFlags.startsSwapped {
             swapStreams()
         }
@@ -446,11 +449,21 @@ final class CameraViewModel {
 
     // MARK: Derived presentation state
 
+    /// The red button's state.
+    ///
+    /// Video-only now that the two shutters are separate controls: the red
+    /// button records and the white one takes stills, so neither has to encode
+    /// which mode the app is in. `photoIdle` therefore never appears here — it
+    /// belongs to the white button, which has one appearance.
     var shutterState: ShutterState {
         guard status.isRunning || isRecording else { return .disabled }
         if isRecording { return isPaused ? .videoPaused : .videoRecording }
-        return configuration.photoVideoMode == .photo ? .photoIdle : .videoIdle
+        return .videoIdle
     }
+
+    /// The white button is live whenever the session is: during a take it
+    /// captures a still without interrupting the recording (Doc 2 §7.2).
+    var isPhotoButtonEnabled: Bool { status.isRunning || isRecording }
 
     var hasSecondaryStream: Bool {
         configuration.mode.isDual && engine.previewSource(for: .secondary) != nil
@@ -483,6 +496,7 @@ final class CameraViewModel {
             isRecording: isRecording,
             isDualMode: configuration.mode.isDual,
             layout: configuration.layout,
+            aspectRatio: configuration.aspectRatio,
             overlayWidthFraction: overlayWidthFraction,
             showsZoomPills: areZoomPillsVisible && !zoomStops.isEmpty
         )
@@ -581,6 +595,25 @@ final class CameraViewModel {
         HapticEngine.shared.sliderDetent()
     }
 
+    /// Cycles the frame shape, 16:9 ↔ 4:3.
+    ///
+    /// Refused mid-take rather than silently ignored: the writer is committed to
+    /// one canvas size for the whole file, and a control that appears to work
+    /// and changes nothing is worse than one that says why it can't.
+    func toggleAspectRatio() {
+        guard !isRecording else {
+            toasts.show(
+                "The frame shape can't change while recording",
+                systemImage: "aspectratio",
+                isWarning: true
+            )
+            HapticEngine.shared.error()
+            return
+        }
+        configuration.aspectRatio = configuration.aspectRatio.toggled
+        HapticEngine.shared.modeChanged()
+    }
+
     func setPhotoVideoMode(_ mode: PhotoVideoMode) {
         guard !isRecording, mode != configuration.photoVideoMode else { return }
         configuration.photoVideoMode = mode
@@ -603,16 +636,26 @@ final class CameraViewModel {
 
     // MARK: Actions — shutter
 
-    func triggerShutter() {
-        switch configuration.photoVideoMode {
-        case .photo:
-            capturePhoto()
-        case .video:
-            isRecording ? stopRecording() : startRecording()
-        }
+    /// The red button. Starts or stops a take, and leaves the app in Video mode
+    /// so the chrome that depends on it — the torch, the transient label —
+    /// agrees with what just happened.
+    func triggerRecord() {
+        setPhotoVideoMode(.video)
+        isRecording ? stopRecording() : startRecording()
     }
 
-    private func capturePhoto() {
+    /// The white button. Takes a still, and during a take takes it *without*
+    /// interrupting the recording.
+    func triggerPhoto() {
+        guard isPhotoButtonEnabled else {
+            HapticEngine.shared.error()
+            return
+        }
+        guard !isRecording else {
+            captureStillDuringVideo()
+            return
+        }
+        setPhotoVideoMode(.photo)
         Task { await runCapture() }
     }
 
