@@ -102,6 +102,12 @@ struct CameraScreen: View {
             // drawing with, on every change that can move the overlay.
             .onChange(of: geometry) { _, new in model.syncComposition(with: new) }
             .onChange(of: model.overlayCentreUnit) { _, _ in model.syncComposition(with: geometry) }
+            // The border is not part of `LayoutGeometry` — it changes nothing
+            // about where anything sits — so it needs its own push, or the
+            // preview and the file disagree about the border for as long as
+            // nothing else moves. The two size fractions *are* in the geometry,
+            // so `onChange(of: geometry)` above already carries them.
+            .onChange(of: model.overlayBorder) { _, _ in model.syncComposition(with: geometry) }
             .task(id: geometry) { model.syncComposition(with: geometry) }
         }
         .background(Color.black)
@@ -256,6 +262,8 @@ struct CameraScreen: View {
             QualitySheet(model: model)
         case .settings:
             SettingsPlaceholderSheet(model: model)
+        case .pipParameters:
+            PiPParameterSheet(model: model)
         }
     }
 }

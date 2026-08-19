@@ -27,7 +27,9 @@ struct FloatingOverlayView: View {
     /// at the same rate. That was the judder. Only this view redraws now.
     @State private var dragCentre: CGPoint?
     @State private var dragOrigin: CGPoint?
-    @State private var pinchStartFraction: CGFloat?
+    /// Width and height fractions at the moment the pinch began, so the whole
+    /// gesture is measured against one baseline rather than compounding.
+    @State private var pinchStartSize: CGSize?
 
     /// Resets itself the moment the gesture ends *or is cancelled*, which
     /// `onEnded` does not promise. Without it, a drag interrupted by a system
@@ -71,11 +73,14 @@ struct FloatingOverlayView: View {
 
     private var overlayContent: some View {
         CameraPreviewView(source: source)
-            .clipShape(clipShape)
+            .clipShape(borderShape)
             .overlay {
-                clipShape.stroke(
-                    DC.Color.chromePrimary.opacity(DC.Stroke.overlayOpacity),
-                    lineWidth: DC.Stroke.overlay
+                // `strokeBorder`, not `stroke`: the band has to sit inside the
+                // clip, because that is where the compositor draws it. See
+                // `OverlayShape`.
+                borderShape.strokeBorder(
+                    model.overlayBorder.swiftUIColor,
+                    lineWidth: model.overlayBorder.width
                 )
             }
             // The ambient shadow is what tells the eye this element floats
@@ -102,10 +107,13 @@ struct FloatingOverlayView: View {
             .accessibilityAction(named: "Move to next corner") { moveToNextCorner() }
     }
 
-    private var clipShape: AnyShape {
-        model.configuration.layout.overlayIsCircular
-            ? AnyShape(Circle())
-            : AnyShape(RoundedRectangle.dc(DC.Radius.overlay))
+    /// The overlay's outline, at the radius the user chose. `pipCircle` ignores
+    /// the radius entirely — a circle has no corners to round.
+    private var borderShape: OverlayShape {
+        OverlayShape(
+            cornerRadius: model.overlayBorder.cornerRadius,
+            isCircular: model.configuration.layout.overlayIsCircular
+        )
     }
 
     /// The overlay's *touch* shape: its drawn shape with every control cluster
@@ -128,7 +136,7 @@ struct FloatingOverlayView: View {
     private var hitShape: OverlayHitShape {
         let origin = CGPoint(x: centre.x - size.width / 2, y: centre.y - size.height / 2)
         return OverlayHitShape(
-            base: clipShape,
+            base: AnyShape(borderShape),
             // The obstacles are in screen coordinates; the hit shape is asked
             // for a path in the overlay's own. During a drag `centre` is the
             // live position, so the cut-outs track the overlay as it moves.
@@ -189,12 +197,18 @@ struct FloatingOverlayView: View {
     private var pinchGesture: some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                let base = pinchStartFraction ?? model.overlayWidthFraction
-                if pinchStartFraction == nil { pinchStartFraction = base }
-                model.resizeOverlay(to: base * value.magnification)
+                let base = pinchStartSize ?? CGSize(
+                    width: model.overlayWidthFraction,
+                    height: model.overlayHeightFraction
+                )
+                if pinchStartSize == nil { pinchStartSize = base }
+                // Both axes by the same factor: a pinch is a resize, and an
+                // overlay that changed shape under two fingers would be
+                // undoing the height the user set on purpose.
+                model.scaleOverlay(from: base, by: value.magnification)
             }
             .onEnded { _ in
-                pinchStartFraction = nil
+                pinchStartSize = nil
                 // A resize can push the overlay's edge past the gutter, so the
                 // stored placement is re-clamped against the new size.
                 model.overlayCentreUnit = geometry.unitCentre(

@@ -107,6 +107,22 @@ static float roundedRectDistance(float2 p, float2 halfSize, float radius) {
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
 }
 
+// Approximate signed distance to an axis-aligned ellipse (Quilez). Negative
+// inside, and — unlike the naive `length(p / r) - 1` — scaled in real distance
+// units, which is what the antialiasing width and the inset stroke both depend
+// on: a scaled field would make the border thicken at the flat ends of a
+// squashed overlay and thin at the sharp ones.
+//
+// Degenerates to `length(p) - r` when the two radii agree, so a circular
+// overlay left at equal width and height is still exactly a circle.
+static float ellipseDistance(float2 p, float2 radii) {
+    float2 r = max(radii, 1e-5);
+    float k0 = length(p / r);
+    if (k0 < 1e-5) { return -min(r.x, r.y); }
+    float k1 = length(p / (r * r));
+    return k0 * (k0 - 1.0) / k1;
+}
+
 // MARK: - Fragment
 
 fragment float4 compositeFragment(VertexOut in [[stage_in]],
@@ -163,9 +179,7 @@ fragment float4 compositeFragment(VertexOut in [[stage_in]],
 
     float distance;
     if (u.isCircular != 0) {
-        // Swift sizes a circular overlay square in x-units, so either axis
-        // gives the radius.
-        distance = length(p) - halfSize.x;
+        distance = ellipseDistance(p, halfSize);
     } else {
         distance = roundedRectDistance(p, halfSize, u.cornerRadius);
     }

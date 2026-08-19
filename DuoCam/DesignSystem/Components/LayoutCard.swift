@@ -27,11 +27,21 @@ struct LayoutCard: View {
     /// in its own right.
     static let height: CGFloat = 92
 
+    /// The screen outline inside the card.
+    ///
+    /// 36×47 rather than the original 40×52, for the same reason the row's
+    /// gutter shrank: `pipWide` made this a six-card row, and on the narrowest
+    /// supported screen a 40pt schematic plus its 6pt side padding no longer fit
+    /// the card's share of the width. The proportion — a phone, taller than it
+    /// is wide — is unchanged.
+    private static let schematicWidth: CGFloat = 36
+    private static let schematicHeight: CGFloat = 47
+
     var body: some View {
         Button(action: action) {
             VStack(spacing: 8) {
                 LayoutSchematic(layout: layout, isSelected: isSelected)
-                    .frame(width: 40, height: 52)
+                    .frame(width: Self.schematicWidth, height: Self.schematicHeight)
                     .overlay(alignment: .topLeading) {
                         if isLocked {
                             Image(systemName: "lock.fill")
@@ -111,14 +121,11 @@ private struct LayoutSchematic: View {
     @ViewBuilder
     private func secondaryRegion(w: CGFloat, h: CGFloat) -> some View {
         switch layout {
-        case .pipRounded:
-            pip(RoundedRectangle.dc(2.5), size: CGSize(width: w * 0.34, height: w * 0.34 / 0.75))
-
-        case .pipTall:
-            pip(RoundedRectangle.dc(2.5), size: CGSize(width: w * 0.28, height: w * 0.28 / 0.5625))
+        case .pipRounded, .pipTall, .pipWide:
+            pip(RoundedRectangle.dc(2.5), size: overlaySize(in: w))
 
         case .pipCircle:
-            pip(Circle(), size: CGSize(width: w * 0.34, height: w * 0.34))
+            pip(Circle(), size: overlaySize(in: w))
 
         case .splitHorizontal:
             VStack(spacing: 0) {
@@ -129,6 +136,21 @@ private struct LayoutSchematic: View {
         case .splitDiagonal:
             DiagonalHalf().fill(fill.opacity(0.55))
         }
+    }
+
+    /// The overlay at the size and shape this layout actually installs.
+    ///
+    /// Both numbers come from `LayoutType` rather than being tuned per card, so
+    /// the schematic cannot drift from what tapping it produces — the width is
+    /// the layout's own fraction, and the height follows its real pixel
+    /// proportions rather than the fraction, because the card's outline is a
+    /// stylised phone rather than a true 16:9 frame.
+    private func overlaySize(in width: CGFloat) -> CGSize {
+        let overlayWidth = width * layout.defaultOverlaySize.width
+        return CGSize(
+            width: overlayWidth,
+            height: overlayWidth / max(layout.overlayAspectRatio, 0.01)
+        )
     }
 
     /// A floating overlay sits inset from the top-right corner, matching the

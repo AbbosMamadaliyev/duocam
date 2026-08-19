@@ -136,8 +136,14 @@ nonisolated struct CompositionParameters: Equatable, Sendable {
     /// Overlay centre in normalised output coordinates (0…1, origin top-left).
     var overlayCentre: CGPoint = CGPoint(x: 0.8, y: 0.2)
     var overlayWidthFraction: CGFloat = 0.32
+    /// Fraction of the output's *height*, independent of the width.
+    var overlayHeightFraction: CGFloat = 0.24
     var splitRatio: CGFloat = 0.5
     var diagonalAngle: Double = 0
+    /// The overlay's border, as the user set it. Travels with the rest of the
+    /// composition so the recorded frame carries the same border the preview
+    /// drew, rather than the design system's default.
+    var border: OverlayBorderStyle = .default
 }
 
 /// One manual adjustment, targeted at a stream.

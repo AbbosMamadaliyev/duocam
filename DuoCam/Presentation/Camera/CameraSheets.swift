@@ -14,7 +14,13 @@ struct LayoutSheet: View {
 
     /// Gutter between cards. The cards themselves flex, so this is the only
     /// horizontal number the row needs.
-    private static let cardGap: CGFloat = 8
+    ///
+    /// 6 rather than 8 since `pipWide` made this a six-card row: on a 375pt
+    /// screen the five 8pt gutters plus the sheet's own margins left each card
+    /// under 49pt, which is narrower than the schematic inside it. Two points
+    /// per gutter is ten points back across the row, and the difference between
+    /// a schematic that fits and one that is clipped.
+    private static let cardGap: CGFloat = 6
 
     /// Title + gap + card row + top and bottom margins, and nothing else.
     ///
@@ -376,6 +382,36 @@ struct SettingsPlaceholderSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                // First, above Capture, because it is the one row here that is
+                // about how the footage *looks* rather than how it is made —
+                // and the only one whose effect is invisible from inside this
+                // sheet, which is why it closes it on the way through.
+                Section {
+                    Button {
+                        model.presentPiPParameterSheet()
+                    } label: {
+                        HStack {
+                            Text("PiP parameter")
+                                .foregroundStyle(Color.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        // `.buttonStyle(.plain)` hit-tests the label's *content*
+                        // and a `Spacer` is not content, so without this the row
+                        // only responded to taps that landed on the word or the
+                        // chevron — the gap between them, which is most of the
+                        // row, did nothing.
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                } footer: {
+                    Text("Size, corner radius, thickness and colour of the "
+                         + "floating preview. The camera stays visible while you "
+                         + "adjust it.")
+                }
+
                 Section("Capture") {
                     Toggle("Grid", isOn: Binding(
                         get: { model.configuration.showsGrid },

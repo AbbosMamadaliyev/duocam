@@ -41,7 +41,43 @@ final class CameraViewModel {
     /// Unit rather than absolute so the placement survives a rotation, a pinch
     /// resize, and a different device class.
     var overlayCentreUnit: CGPoint?
+
+    /// The overlay's size, as fractions of the picture. See `OverlayMetrics`.
+    ///
+    /// Written through `setOverlayWidth`/`setOverlayHeight` from the sheet and
+    /// through `scaleOverlay` from the pinch; both clamp. Deliberately *not*
+    /// persisted, unlike `overlayBorder`: a size only means something next to
+    /// the layout it was chosen for, and the layout resets to `pipRounded` at
+    /// every launch, so a restored size would arrive attached to the wrong
+    /// shape.
     var overlayWidthFraction: CGFloat = 0.32
+    var overlayHeightFraction: CGFloat = 0.24
+
+    /// The overlay's border — corner radius, thickness and colour.
+    ///
+    /// Persisted, like `savesToPhotoLibrary`: it is a look the user chose for
+    /// their footage, not a per-session mood, and re-picking it at every launch
+    /// would make it not worth picking at all.
+    ///
+    /// Pushing it to the compositor is `CameraScreen`'s job rather than this
+    /// setter's, because the push needs the live `LayoutGeometry` and the view
+    /// is what owns that.
+    var overlayBorder: OverlayBorderStyle = CameraViewModel.storedOverlayBorder {
+        didSet {
+            guard overlayBorder != oldValue else { return }
+            let encoded = try? JSONEncoder().encode(overlayBorder)
+            UserDefaults.standard.set(encoded, forKey: Self.overlayBorderKey)
+        }
+    }
+
+    private static let overlayBorderKey = "overlay.borderStyle"
+
+    private static var storedOverlayBorder: OverlayBorderStyle {
+        guard let data = UserDefaults.standard.data(forKey: overlayBorderKey),
+              let decoded = try? JSONDecoder().decode(OverlayBorderStyle.self, from: data)
+        else { return .default }
+        return decoded.sanitized
+    }
 
     /// 0.3…0.7 (Doc 2 §5.7).
     var splitRatio: CGFloat = 0.5
@@ -228,11 +264,22 @@ final class CameraViewModel {
         if let mode = DebugFlags.forcedMode, availableModes.contains(mode) {
             configuration.apply(mode: mode)
         }
-        if let layout = DebugFlags.forcedLayout {
-            configuration.layout = layout
-        }
         if let aspectRatio = DebugFlags.forcedAspectRatio {
             configuration.aspectRatio = aspectRatio
+        }
+        // After the aspect ratio and through the conforming step, not by
+        // assigning `configuration.layout` directly: the overlay's height is
+        // the layout's to set now, and writing the layout past `select(layout:)`
+        // would leave a forced `pipWide` wearing the default 3:4 proportions.
+        if let layout = DebugFlags.forcedLayout {
+            configuration.layout = layout
+            conformOverlayToLayout()
+        }
+        if let width = DebugFlags.forcedOverlayWidth {
+            setOverlayWidth(width)
+        }
+        if let height = DebugFlags.forcedOverlayHeight {
+            setOverlayHeight(height)
         }
         if DebugFlags.startsSwapped {
             swapStreams()
@@ -262,6 +309,42 @@ final class CameraViewModel {
         }
         if DebugFlags.lensSwitchTest {
             runLensSwitchTest()
+        }
+        if DebugFlags.swapTest {
+            runSwapTest()
+        }
+    }
+
+    /// Taps Swap twice on a running session and reports what the graph did.
+    ///
+    /// What to read in the output: the two streams' devices must simply trade
+    /// roles. An input count that dips, a `FELL BACK` line in the switch trace,
+    /// or a device that comes back the same on both sides of the swap all mean
+    /// the same thing — the swap went through a session rebuild, which is the
+    /// black frame the user sees.
+    private func runSwapTest() {
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            guard let multiCam = engine as? MultiCamCaptureEngine else { return }
+
+            for pass in 1...2 {
+                print("═══ swap test · before pass \(pass) ═══")
+                print("config: primary=\(configuration.primarySource.rawValue) "
+                      + "secondary=\(configuration.secondarySource?.rawValue ?? "none") "
+                      + "zoom=\(String(format: "%.2f", configuration.primaryZoom))")
+                print(multiCam.hardwareSelfCheck())
+                fflush(stdout)
+
+                swapStreams()
+                try? await Task.sleep(for: .seconds(3))
+
+                print("═══ swap test · after pass \(pass) ═══")
+                print("config: primary=\(configuration.primarySource.rawValue) "
+                      + "secondary=\(configuration.secondarySource?.rawValue ?? "none") "
+                      + "zoom=\(String(format: "%.2f", configuration.primaryZoom))")
+                print(multiCam.hardwareSelfCheck())
+                fflush(stdout)
+            }
         }
     }
 
@@ -498,9 +581,14 @@ final class CameraViewModel {
             layout: configuration.layout,
             aspectRatio: configuration.aspectRatio,
             overlayWidthFraction: overlayWidthFraction,
+            overlayHeightFraction: overlayHeightFraction,
             showsZoomPills: areZoomPillsVisible && !zoomStops.isEmpty
         )
     }
+
+    /// The picture's own width-to-height ratio — the conversion factor between a
+    /// fraction of the frame's width and a fraction of its height.
+    private var pictureAspect: CGFloat { configuration.aspectRatio.portraitAspect }
 
     // MARK: Actions — mode, layout, sources
 
@@ -516,7 +604,27 @@ final class CameraViewModel {
         // Doc 1 §4.5 gates split and diagonal behind Pro.
         if layout.isSplit, entitlements?.require(.splitLayouts) == false { return }
         configuration.layout = layout
+        conformOverlayToLayout()
         HapticEngine.shared.layoutSelected()
+    }
+
+    /// Installs the size the chosen layout stands for.
+    ///
+    /// Both fractions, not just the height. Each card now carries its own
+    /// width as well — Wide and Circle are far larger than the tall shapes,
+    /// because a 16:9 box at the tall shapes' 32% is a tenth of the frame high
+    /// and a circle in the same box is a badge. Carrying the previous width
+    /// across would have made choosing a card produce a different size
+    /// depending on where the user had last left the slider, which is not what
+    /// a preset is.
+    private func conformOverlayToLayout() {
+        guard configuration.layout.isPiP else { return }
+        let size = OverlayMetrics.defaultSize(
+            for: configuration.layout,
+            pictureAspect: pictureAspect
+        )
+        overlayWidthFraction = size.width
+        overlayHeightFraction = size.height
     }
 
     /// Applies a quality change through the gate.
@@ -610,7 +718,15 @@ final class CameraViewModel {
             HapticEngine.shared.error()
             return
         }
+        // The height fraction is a fraction of the *picture's* height, and
+        // switching 16:9 → 4:3 makes the picture shorter. Left alone, the
+        // overlay would keep its share of a frame that changed underneath it and
+        // come out visibly squatter. Rescaling by the ratio of the two picture
+        // aspects keeps its shape — and its size in points — exactly as it was.
+        let outgoing = pictureAspect
         configuration.aspectRatio = configuration.aspectRatio.toggled
+        overlayHeightFraction = (overlayHeightFraction * pictureAspect / outgoing)
+            .clamped(to: OverlayMetrics.heightRange)
         HapticEngine.shared.modeChanged()
     }
 
@@ -856,8 +972,10 @@ final class CameraViewModel {
             layout: configuration.layout,
             overlayCentre: geometry.unitCentre(for: centre),
             overlayWidthFraction: overlayWidthFraction,
+            overlayHeightFraction: overlayHeightFraction,
             splitRatio: splitRatio,
-            diagonalAngle: diagonalAngle
+            diagonalAngle: diagonalAngle,
+            border: overlayBorder
         )
         guard parameters != lastComposition else { return }
         lastComposition = parameters
@@ -951,14 +1069,89 @@ final class CameraViewModel {
         pushComposition(overlayCentre: centre, geometry: geometry)
     }
 
-    func resizeOverlay(to fraction: CGFloat) {
-        let clamped = fraction.clamped(to: 0.25...0.5)
-        if clamped != overlayWidthFraction {
-            if clamped == 0.25 || clamped == 0.5 {
-                HapticEngine.shared.resizeLimit()
-            }
-            overlayWidthFraction = clamped
+    /// Closes Settings and opens the PiP Parameter sheet in its place.
+    ///
+    /// Two steps with a gap between them, rather than one assignment. Both
+    /// sheets are presented through the same `.sheet(item:)` slot, and swapping
+    /// the item while the first is on screen makes UIKit dismiss and re-present
+    /// inside one transaction — which it drops often enough that the second
+    /// sheet simply never appears. The delay is the dismissal's own duration.
+    ///
+    /// Settings has to go rather than stack, because the point of the parameter
+    /// sheet is watching the overlay change behind it, and a full-height
+    /// Settings sheet is exactly what is covering it.
+    func presentPiPParameterSheet() {
+        activeSheet = nil
+        Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            activeSheet = .pipParameters
         }
+    }
+
+    /// Restores every PiP parameter: the shipped border — 20pt corners, a 3pt
+    /// white stroke at 90% — and the size the current layout stands for.
+    func resetPiPParameters() {
+        overlayBorder = .default
+        conformOverlayToLayout()
+        HapticEngine.shared.success()
+    }
+
+    /// Whether anything on the parameter sheet has been moved off its default,
+    /// which is the only time a Reset control has something to offer.
+    ///
+    /// The size half is measured against the *current layout's* preset, not a
+    /// fixed number: Wide's default is 60 × 30 and Circle's 50 × 28, so a
+    /// single hard-coded pair would have shown Reset permanently on four of the
+    /// six cards.
+    var hasCustomPiPParameters: Bool {
+        let size = OverlayMetrics.defaultSize(
+            for: configuration.layout,
+            pictureAspect: pictureAspect
+        )
+        return overlayBorder != .default
+            || abs(overlayWidthFraction - size.width) > 0.001
+            || abs(overlayHeightFraction - size.height) > 0.001
+    }
+
+    // MARK: Actions — overlay size
+
+    func setOverlayWidth(_ fraction: CGFloat) {
+        let clamped = fraction.clamped(to: OverlayMetrics.widthRange)
+        guard clamped != overlayWidthFraction else { return }
+        overlayWidthFraction = clamped
+    }
+
+    func setOverlayHeight(_ fraction: CGFloat) {
+        let clamped = fraction.clamped(to: OverlayMetrics.heightRange)
+        guard clamped != overlayHeightFraction else { return }
+        overlayHeightFraction = clamped
+    }
+
+    /// The pinch: one magnification applied to both axes at once.
+    ///
+    /// The scale is limited *before* it is applied rather than each axis being
+    /// clamped afterwards. Clamping afterwards is what would let a pinch past
+    /// the width ceiling keep stretching the height, so the overlay would change
+    /// shape at the limit instead of simply stopping.
+    func scaleOverlay(from base: CGSize, by magnification: CGFloat) {
+        var scale = min(
+            magnification,
+            OverlayMetrics.maximumWidthFraction / max(base.width, 0.01),
+            OverlayMetrics.maximumHeightFraction / max(base.height, 0.01)
+        )
+        scale = max(
+            scale,
+            OverlayMetrics.minimumWidthFraction / max(base.width, 0.01),
+            OverlayMetrics.minimumHeightFraction / max(base.height, 0.01)
+        )
+
+        let width = base.width * scale
+        let height = base.height * scale
+        guard width != overlayWidthFraction || height != overlayHeightFraction else { return }
+
+        if abs(scale - magnification) > 0.001 { HapticEngine.shared.resizeLimit() }
+        overlayWidthFraction = width
+        overlayHeightFraction = height
     }
 }
 
@@ -977,6 +1170,7 @@ nonisolated enum CameraSheet: String, Identifiable {
     case layout
     case quality
     case settings
+    case pipParameters
 
     var id: String { rawValue }
 }

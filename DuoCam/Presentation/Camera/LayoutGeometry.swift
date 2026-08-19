@@ -55,8 +55,17 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
     var layout: LayoutType = .pipRounded
     /// The shape of the recorded frame, which is also the shape of `previewRect`.
     var aspectRatio: AspectRatio = .sixteenByNine
-    /// Overlay width as a fraction of screen width, 0.25…0.5 (Doc 2 §5.5).
+    /// Overlay width as a fraction of the picture's width (Doc 2 §5.5), within
+    /// `OverlayMetrics.widthRange`.
     var overlayWidthFraction: CGFloat = 0.32
+    /// Overlay height as a fraction of the picture's *height*, within
+    /// `OverlayMetrics.heightRange`.
+    ///
+    /// Independent of the width rather than derived from the layout's aspect
+    /// ratio, which is what makes the PiP Parameter sheet's two size sliders
+    /// two sliders. Choosing a layout still sets this — that is what the layout
+    /// cards are *for* — it is just no longer the only thing that can.
+    var overlayHeightFraction: CGFloat = 0.24
     /// Whether the zoom pill row is on screen.
     ///
     /// It is a control cluster like any other — an overlay parked on it takes
@@ -114,13 +123,20 @@ nonisolated struct LayoutGeometry: Equatable, Sendable {
 
     // MARK: Overlay
 
+    /// Both axes come straight from their own fraction now.
+    ///
+    /// The height used to be derived from the width through
+    /// `layout.overlayAspectRatio`, with `pipCircle` special-cased to a square
+    /// so a `Circle` would fill its box rather than inscribe in it. Neither
+    /// survives independent width and height: the layout sets the two fractions
+    /// when it is chosen, and the circle is drawn as an ellipse — which *is* a
+    /// circle whenever the two agree, and is the only honest shape when the user
+    /// has said they should not.
     var overlaySize: CGSize {
-        let width = previewRect.width * overlayWidthFraction
-        // `pipCircle` needs a square frame — a `Circle` in a 3:4 box inscribes
-        // rather than fills, leaving stroke and content disagreeing about the
-        // edge.
-        let height = layout.overlayIsCircular ? width : width / layout.overlayAspectRatio
-        return CGSize(width: width, height: height)
+        CGSize(
+            width: previewRect.width * overlayWidthFraction,
+            height: previewRect.height * overlayHeightFraction
+        )
     }
 
     // MARK: Control cluster frames

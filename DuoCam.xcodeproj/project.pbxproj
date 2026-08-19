@@ -256,6 +256,7 @@
 				DEVELOPMENT_TEAM = WSHQNQ86XN;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = DuoRec;
 				INFOPLIST_KEY_NSCameraUsageDescription = "DuoCam records from two cameras at once, so you can capture the scene and your reaction in a single take.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "DuoCam records audio with your video. Without microphone access your recordings will be silent.";
@@ -263,7 +264,6 @@
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "DuoCam needs photo library access to show your saved captures and let you export them.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
@@ -294,6 +294,7 @@
 				DEVELOPMENT_TEAM = WSHQNQ86XN;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = DuoRec;
 				INFOPLIST_KEY_NSCameraUsageDescription = "DuoCam records from two cameras at once, so you can capture the scene and your reaction in a single take.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "DuoCam records audio with your video. Without microphone access your recordings will be silent.";
@@ -301,7 +302,6 @@
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "DuoCam needs photo library access to show your saved captures and let you export them.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;

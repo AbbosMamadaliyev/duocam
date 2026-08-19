@@ -94,6 +94,14 @@ enum DebugFlags {
     /// switch are what actually answer it.
     static var lensSwitchTest: Bool { flag("DCLensTest") }
 
+    /// Tap the swap control twice on a *live* session, dumping the connection
+    /// graph around each.
+    ///
+    /// `DCSwapped` is not the same test: it swaps during launch, before the
+    /// session is running, so it never exercises the path a user's tap takes —
+    /// which is the one that fell back to a full session rebuild in Rear + Rear.
+    static var swapTest: Bool { flag("DCSwapTest") }
+
     /// Print the probed quality constraint matrix — the per-device capability
     /// ceiling Doc 3 Phase 5 task 9 asks to be recorded.
     static var dumpsQualityMatrix: Bool { flag("DCDumpMatrix") }
@@ -146,10 +154,29 @@ enum DebugFlags {
     /// cannot be scripted into.
     static var startsSwapped: Bool { flag("DCSwapped") }
 
-    /// Force a layout: `pipRounded`, `pipTall`, `pipCircle`, `splitHorizontal`,
-    /// `splitDiagonal`.
+    /// Force a layout: `pipRounded`, `pipTall`, `pipWide`, `pipCircle`,
+    /// `splitHorizontal`, `splitDiagonal`.
     static var forcedLayout: LayoutType? {
         string("DCLayout").flatMap(LayoutType.init(rawValue:))
+    }
+
+    /// Force the overlay's width and height, as fractions of the picture:
+    /// `-DCOverlayWidth 0.9 -DCOverlayHeight 0.5`.
+    ///
+    /// The two size sliders in the PiP Parameter sheet are drags on a control
+    /// inside a sheet — two inputs the simulator cannot be scripted into — and
+    /// what they change is entirely geometric, so it has to be *seen*. Applied
+    /// after the forced layout, since choosing a layout resets both.
+    static var forcedOverlayWidth: CGFloat? { fraction("DCOverlayWidth") }
+    static var forcedOverlayHeight: CGFloat? { fraction("DCOverlayHeight") }
+
+    private static func fraction(_ key: String) -> CGFloat? {
+        #if DEBUG
+        let value = defaults.double(forKey: key)
+        return value > 0 ? CGFloat(value) : nil
+        #else
+        return nil
+        #endif
     }
 
     /// Force a capture mode: `dualFrontBack`, `dualRear`, `single`.
@@ -169,7 +196,8 @@ enum DebugFlags {
     /// Present the paywall on launch.
     static var opensPaywall: Bool { flag("DCPaywall") }
 
-    /// Present a sheet on launch: `layout`, `adjustments`, `quality`, `settings`.
+    /// Present a sheet on launch: `layout`, `adjustments`, `quality`,
+    /// `settings`, `pipParameters`.
     static var forcedSheet: CameraSheet? {
         string("DCSheet").flatMap(CameraSheet.init(rawValue:))
     }

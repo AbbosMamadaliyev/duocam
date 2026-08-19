@@ -10,7 +10,7 @@ nonisolated enum CompositionMode: Int32 {
 
     init(_ layout: LayoutType) {
         switch layout {
-        case .pipRounded, .pipTall, .pipCircle: self = .pip
+        case .pipRounded, .pipTall, .pipWide, .pipCircle: self = .pip
         case .splitHorizontal: self = .splitHorizontal
         case .splitDiagonal: self = .splitDiagonal
         }
@@ -75,8 +75,11 @@ extension CompositionUniforms {
         /// user saw — Doc 3 Phase 2's first acceptance criterion.
         var overlayCentre: CGPoint
         var overlayWidthFraction: CGFloat
+        var overlayHeightFraction: CGFloat
         var splitRatio: CGFloat
         var diagonalAngle: Double
+        /// The overlay's border, from the same value the preview strokes with.
+        var border: OverlayBorderStyle = .default
     }
 
     init(_ inputs: Inputs) {
@@ -92,14 +95,23 @@ extension CompositionUniforms {
         splitRatio = Float(inputs.splitRatio)
         diagonalAngle = Float(inputs.diagonalAngle * .pi / 180)
 
-        // Doc 2 §2.3/§5.2: 20pt radius and a 3pt stroke, expressed as a
+        // Doc 2 §2.3/§5.2 set a 20pt radius and a 3pt stroke; the border sheet
+        // lets the user take either down from there. Both are expressed as a
         // fraction of the output width so they scale with resolution instead of
-        // shrinking to nothing at 4K.
+        // shrinking to nothing at 4K — a border chosen against a 393pt preview
+        // has to survive being written into a 2160px-wide frame.
+        let border = inputs.border.sanitized
         let referenceWidth = Float(inputs.outputSize.width)
         cornerRadius = inputs.layout.overlayIsCircular
             ? 0
-            : Float(DC.Radius.overlay) / max(referenceWidth / 3, 1)
-        strokeWidth = Float(DC.Stroke.overlay) / max(referenceWidth / 3, 1)
+            : Float(border.cornerRadius) / max(referenceWidth / 3, 1)
+        strokeWidth = Float(border.width) / max(referenceWidth / 3, 1)
+        strokeColor = SIMD4(
+            Float(border.red),
+            Float(border.green),
+            Float(border.blue),
+            Float(border.opacity)
+        )
 
         secondaryRect = Self.overlayRect(inputs: inputs, aspect: aspect)
 
@@ -153,15 +165,18 @@ extension CompositionUniforms {
     }
 
     /// The overlay's rect in output-normalised coordinates.
+    ///
+    /// Both axes arrive already decided. The height used to be computed here
+    /// from the layout's aspect ratio, with a separate branch keeping a circular
+    /// overlay square in *pixels*; that maths now lives in `OverlayMetrics`,
+    /// where the sliders and `LayoutGeometry` can read the same answer. Deriving
+    /// it a second time in the capture layer is precisely how the recorded
+    /// overlay and the previewed one drift apart.
     private static func overlayRect(inputs: Inputs, aspect: Float) -> SIMD4<Float> {
         guard inputs.hasSecondary, CompositionMode(inputs.layout) == .pip else { return .zero }
 
         let width = inputs.overlayWidthFraction
-        // A circular overlay must be square in *pixels*, which means its
-        // normalised height is `width * aspect` — not `width`.
-        let height: CGFloat = inputs.layout.overlayIsCircular
-            ? width * CGFloat(aspect)
-            : width / inputs.layout.overlayAspectRatio * CGFloat(aspect)
+        let height = inputs.overlayHeightFraction
 
         return SIMD4(
             Float(inputs.overlayCentre.x - width / 2),

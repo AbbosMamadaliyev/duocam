@@ -396,8 +396,10 @@ final class SimulatedCaptureEngine: CaptureEngine {
             hasSecondary: secondarySource != nil,
             overlayCentre: composition.overlayCentre,
             overlayWidthFraction: composition.overlayWidthFraction,
+            overlayHeightFraction: composition.overlayHeightFraction,
             splitRatio: composition.splitRatio,
-            diagonalAngle: composition.diagonalAngle
+            diagonalAngle: composition.diagonalAngle,
+            border: composition.border
         )
 
         compositionState.update(uniforms: CompositionUniforms(inputs), outputSize: outputSize)
