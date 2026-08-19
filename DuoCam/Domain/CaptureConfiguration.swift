@@ -69,12 +69,21 @@ nonisolated struct CaptureConfiguration: Equatable, Codable, Sendable {
         guard let secondary = secondarySource else { return }
         secondarySource = primarySource
         primarySource = secondary
-        // The stream arriving from the overlay is framed at its own lens's
-        // full width; carrying the old stream's magnification over would crop
-        // it the moment it took the screen. Callers that know better — the zoom
-        // pills, which swap *in order to* reach a magnification — set it again
-        // after swapping.
-        primaryZoom = 1
+        // The stream arriving from the overlay is framed at its own lens's full
+        // width; carrying the old stream's magnification over would crop it the
+        // moment it took the screen. Callers that know better — the zoom pills,
+        // which swap *in order to* reach a magnification — set it again after
+        // swapping.
+        //
+        // `nominalMagnification`, not `1`. This line read `primaryZoom = 1` and
+        // did the opposite of what the paragraph above claims: in Rear + Rear it
+        // handed the incoming ultra-wide a request for 1× framing, which it can
+        // only meet by cropping itself 2× — to precisely the field of view of
+        // the wide lens it had just replaced. The graph swapped correctly, the
+        // devices traded roles correctly, and the picture on screen did not
+        // change at all, which is what made Swap look like a dead button in that
+        // mode.
+        primaryZoom = secondary.nominalMagnification
     }
 
     /// True when moving from `self` to `other` requires tearing down and

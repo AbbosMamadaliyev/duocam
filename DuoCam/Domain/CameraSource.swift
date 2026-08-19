@@ -57,6 +57,29 @@ nonisolated enum CameraSource: String, CaseIterable, Identifiable, Codable, Send
         }
     }
 
+    /// What this lens shows at its own full frame, in the units
+    /// `CaptureConfiguration.primaryZoom` is expressed in — where `1` is the
+    /// wide lens's framing, not "no zoom".
+    ///
+    /// The distinction is the whole of the Rear + Rear swap bug. `primaryZoom`
+    /// is lens-agnostic on purpose, so handing an incoming ultra-wide a `1`
+    /// does not mean "show me everything you have", it means "crop yourself
+    /// until you look like the wide" — which is exactly what it did, and why
+    /// swapping the two rear lenses changed the picture not at all.
+    ///
+    /// Nominal, like `zoomLabel`. The engine measures the real ratios per
+    /// device and converts through `deviceZoom(forUser:on:)`; on the iPhone 14
+    /// Pro the measured factors are 0.500 / 1.000 / 3.000, so these are the
+    /// right numbers to ask in.
+    var nominalMagnification: CGFloat {
+        switch self {
+        case .front: 1
+        case .rearUltraWide: 0.5
+        case .rearWide: 1
+        case .rearTelephoto: 3
+        }
+    }
+
     /// Label for the zoom pill group (Doc 2 §4.3). These are the nominal stops;
     /// the genuinely available set is probed per device at runtime.
     var zoomLabel: String {
