@@ -22,13 +22,13 @@ nonisolated enum Purchasing {
     /// The **public** SDK key: RevenueCat → Project → API keys → *App Store*.
     /// It starts with `appl_`, is safe to ship, and is not the secret key.
     ///
-    /// Empty until the dashboard exists. An empty key means the SDK is never
-    /// configured at all, and the app behaves exactly as it does with no store
-    /// reachable: the paywall shows its listed prices, the purchase button is
-    /// disabled, and every entitlement check answers "free". That is the same
-    /// degraded path a network failure takes, so the unconfigured build is not a
-    /// special case anyone has to remember.
-    static let apiKey = ""
+    /// An empty key means the SDK is never configured at all, and the app
+    /// behaves exactly as it does with no store reachable: the paywall shows its
+    /// listed prices, the purchase button is disabled, and every entitlement
+    /// check answers "free". That is the same degraded path a network failure
+    /// takes, so an unconfigured build is not a special case anyone has to
+    /// remember — and blanking this line is a complete way to turn the store off.
+    static let apiKey = "appl_kIMOwWjwKzwqdquoAzpweFUFkKm"
 
     /// The entitlement every paid plan grants — the one thing `isPro` reads.
     ///
@@ -36,7 +36,11 @@ nonisolated enum Purchasing {
     /// fourth plan, a promotional grant, a family-shared purchase and a win-back
     /// offer all arrive as the same entitlement, so nothing in the app has to
     /// learn about them.
-    static let entitlementIdentifier = "pro"
+    ///
+    /// Spelled exactly as the dashboard spells it, space and all: RevenueCat
+    /// matches entitlement identifiers by literal string, so `duorec pro` or
+    /// `DuoRec Pro` would silently resolve to "free" for a paying customer.
+    static let entitlementIdentifier = "Duorec Pro"
 
     /// Which offering the paywall draws its plans from. `nil` means "whatever
     /// the dashboard currently marks as the default", which is what makes the

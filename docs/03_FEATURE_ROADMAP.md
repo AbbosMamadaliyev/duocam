@@ -525,7 +525,7 @@ No monetization. No cloud, no accounts, no analytics beyond crash reporting.
 
 ### Technical Tasks
 
-1. Configure App Store Connect products: weekly, monthly, lifetime (non-consumable), then mirror them in RevenueCat as products, an offering with one package each, and a single `pro` entitlement. Paste the public SDK key into `Purchasing.apiKey`.
+1. Configure App Store Connect products: weekly, monthly, lifetime (non-consumable), then mirror them in RevenueCat as products, an offering with one package each, and a single entitlement every plan grants. Paste the public SDK key into `Purchasing.apiKey`. Done: the products are `com.altzet.DuoCam.weekly` / `.monthly` / `.lifetime` and the entitlement is `Duorec Pro`, spelled in `Purchasing.entitlementIdentifier` exactly as the dashboard spells it.
 2. Implement `SubscriptionManager` on RevenueCat: offerings for the plan list, `customerInfoStream` for transactions that complete outside the app, and one named entitlement so expiry re-locks.
 3. Implement `EntitlementGate` as a single service other code queries — never scatter entitlement checks through view code.
 4. Gate the Pro features: 4K, 60 fps, split and diagonal layouts, clean source files, manual controls, watermark removal.

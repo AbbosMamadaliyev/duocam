@@ -57,7 +57,7 @@ Doc 3 orders Recording Core (its Phase 2) before Interface (its Phase 3). This p
 | **F** | Complete Capture Feature Set | Phase 4 | partial | All modes/layouts/lenses | **done**, HW-verified |
 | **G** | Quality Tiers & Performance | Phase 5 | ⚠️ HW | 4K/60 where genuinely supported | **done**, HW-verified |
 | **H** | Review, Export & Onboarding | Phase 6 | ✅ | Gallery, trim, export, 4-page intro | **done** |
-| **I** | Monetization & Release | Phase 7 | ✅ | RevenueCat sandbox flows | **built**, dashboard + sandbox pending |
+| **I** | Monetization & Release | Phase 7 | ✅ | RevenueCat sandbox flows | **built**, dashboard wired, sandbox pending |
 
 ### Verifying states in the simulator
 
@@ -226,11 +226,12 @@ The store lives in the dashboard, not in this repository: products, prices,
 which plans appear and what "Pro" means are all defined there, so the plan mix
 and the pricing change without an app release. `Purchasing` holds the only three
 values the app needs to find that configuration — the public SDK key, the
-entitlement identifier, and optionally an offering identifier — and every path
-tolerates them being unset, which is the state the app ships in until the
-dashboard exists: listed prices under the plan names, a disabled purchase
-button, and every entitlement check answering "free". `-DCRevenueCatKey appl_…`
-points a debug run at a real project without a rebuild.
+entitlement identifier (`Duorec Pro`), and optionally an offering identifier,
+left `nil` so the dashboard's current offering decides the plan mix. Every path
+still tolerates them being unset, which is what a blanked key buys: listed
+prices under the plan names, a disabled purchase button, and every entitlement
+check answering "free". `-DCRevenueCatKey appl_…` points a debug run at a
+different project without a rebuild.
 
 ### Three concurrent writers, 1080p30 (Doc 3 Phase 4 task 22)
 

@@ -14,9 +14,9 @@ import RevenueCat
 /// `SubscriptionManager.package(for:in:)`. A dashboard is free to rename its
 /// products, and the app should not need a release when it does.
 nonisolated enum ProductID: String, CaseIterable, Sendable {
-    case weekly = "com.altzet.DuoCam.pro.weekly"
-    case monthly = "com.altzet.DuoCam.pro.monthly"
-    case lifetime = "com.altzet.DuoCam.pro.lifetime"
+    case weekly = "com.altzet.DuoCam.weekly"
+    case monthly = "com.altzet.DuoCam.monthly"
+    case lifetime = "com.altzet.DuoCam.lifetime"
 
     /// RevenueCat's own name for this kind of package. The dashboard's
     /// predefined identifiers (`$rc_weekly` and friends) map onto these, which

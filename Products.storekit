@@ -13,7 +13,7 @@
           "locale" : "en_US"
         }
       ],
-      "productID" : "com.altzet.DuoCam.pro.lifetime",
+      "productID" : "com.altzet.DuoCam.lifetime",
       "referenceName" : "Pro Lifetime",
       "type" : "NonConsumable"
     }
@@ -42,7 +42,7 @@
               "locale" : "en_US"
             }
           ],
-          "productID" : "com.altzet.DuoCam.pro.weekly",
+          "productID" : "com.altzet.DuoCam.weekly",
           "recurringSubscriptionPeriod" : "P1W",
           "referenceName" : "Pro Weekly",
           "subscriptionGroupID" : "DC-PRO-GROUP",
@@ -62,7 +62,7 @@
               "locale" : "en_US"
             }
           ],
-          "productID" : "com.altzet.DuoCam.pro.monthly",
+          "productID" : "com.altzet.DuoCam.monthly",
           "recurringSubscriptionPeriod" : "P1M",
           "referenceName" : "Pro Monthly",
           "subscriptionGroupID" : "DC-PRO-GROUP",
