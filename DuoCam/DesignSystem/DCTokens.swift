@@ -42,9 +42,14 @@ extension DC {
         /// Onboarding gradient stops (Doc 2 §11.1).
         static let onboardGradientStart = SwiftUI.Color(hex: 0x1E1B4B)
         static let onboardGradientEnd = SwiftUI.Color(hex: 0x7C1D6F)
-        /// Primary-action gradient, shared by onboarding and the paywall.
+        /// Primary-action gradient, still used by onboarding and by the pool of
+        /// light behind the paywall's header.
         static let ctaGradientStart = SwiftUI.Color(hex: 0x5B5BF0)
         static let ctaGradientEnd = SwiftUI.Color(hex: 0xE0407F)
+        /// The flat fill of a primary button. The gradient's own starting stop,
+        /// so a button that stops being a gradient does not stop being the same
+        /// colour the rest of the sheet is lit by.
+        static let cta = ctaGradientStart
     }
 }
 

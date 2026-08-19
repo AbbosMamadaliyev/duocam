@@ -64,6 +64,13 @@ struct PaywallView: View {
         .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         .analyticsScreen(AnalyticsScreen.paywall, class: "PaywallView")
         .task { await subscriptions.load() }
+        // The pre-selected plan is chosen before the store has answered, so it
+        // can be a plan the store then turns out not to sell. Left alone, the
+        // sheet opens on a row that is about to vanish under the selection ring.
+        .onChange(of: visiblePlans) { _, plans in
+            guard !plans.contains(selection) else { return }
+            selection = plans.contains(.monthly) ? .monthly : plans[0]
+        }
         .onChange(of: subscriptions.isPro) { _, isPro in
             if isPro { dismiss() }
         }
@@ -190,7 +197,7 @@ struct PaywallView: View {
     /// tiles the same height when only one of them carries a trial line.
     private var planPicker: some View {
         HStack(alignment: .top, spacing: 10) {
-            ForEach(ProductID.allCases, id: \.self) { plan in
+            ForEach(visiblePlans, id: \.self) { plan in
                 PlanCard(
                     plan: plan,
                     price: displayPrice(for: plan),
@@ -217,6 +224,23 @@ struct PaywallView: View {
         // Room for the recommended card's marker, which sits astride its top
         // edge and would otherwise be clipped by the section above.
         .padding(.top, 10)
+    }
+
+    /// Which plans the picker is allowed to show.
+    ///
+    /// A tier the store cannot sell is not an option, it is a dead end: choosing
+    /// it dims the only button on the sheet and offers no way to find out why.
+    /// So once the store has answered at all, the picker is drawn from what
+    /// actually resolved — a product missing from App Store Connect drops out
+    /// of the strip instead of sitting in it unbuyable, and returns on its own
+    /// the day the store starts serving it, with no release in between.
+    ///
+    /// When *nothing* resolved — no key, no network, no dashboard — all three
+    /// are shown at their listed prices, because three prices under a dimmed
+    /// button still describe the product, and an empty strip describes nothing.
+    private var visiblePlans: [ProductID] {
+        let sellable = ProductID.allCases.filter(subscriptions.isPurchasable)
+        return sellable.isEmpty ? ProductID.allCases : sellable
     }
 
     // MARK: Footer
@@ -288,13 +312,7 @@ struct PaywallView: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: DC.Size.cta)
-            .background(
-                LinearGradient(
-                    colors: [DC.Color.ctaGradientStart, DC.Color.ctaGradientEnd],
-                    startPoint: .leading, endPoint: .trailing
-                ),
-                in: Capsule()
-            )
+            .background(DC.Color.cta, in: Capsule())
         }
         .buttonStyle(.plain)
         .disabled(!isSelectionPurchasable || subscriptions.isPurchasing)
@@ -307,11 +325,17 @@ struct PaywallView: View {
         subscriptions.offer(for: plan)?.displayPrice ?? plan.fallbackPrice
     }
 
-    /// One label for every plan, by request: the button names the transaction
-    /// rather than the tier. What is actually being charged — a trial's length
-    /// and the price after it, or the fact that the lifetime tier does not
-    /// renew — is stated verbatim in `renewalDisclosure` directly beneath.
-    private var continueTitle: String { "Subscribe" }
+    /// The button names the transaction rather than the tier — and the lifetime
+    /// tier is a different transaction. "Subscribe" over a one-off purchase
+    /// promises a recurring charge that will never arrive, which is the kind of
+    /// mismatch App Review reads the disclosure line to catch.
+    ///
+    /// The rest of what is being charged — a trial's length and the price after
+    /// it, or the fact that lifetime does not renew — stays in
+    /// `renewalDisclosure` directly beneath.
+    private var continueTitle: String {
+        selection == .lifetime ? "Buy Lifetime" : "Subscribe"
+    }
 
     /// Auto-renewable subscriptions must say this, and the lifetime tier must
     /// not — App Review reads it, and so does the one user in fifty who checks.
