@@ -57,7 +57,7 @@ Doc 3 orders Recording Core (its Phase 2) before Interface (its Phase 3). This p
 | **F** | Complete Capture Feature Set | Phase 4 | partial | All modes/layouts/lenses | **done**, HW-verified |
 | **G** | Quality Tiers & Performance | Phase 5 | ⚠️ HW | 4K/60 where genuinely supported | **done**, HW-verified |
 | **H** | Review, Export & Onboarding | Phase 6 | ✅ | Gallery, trim, export, 4-page intro | **done** |
-| **I** | Monetization & Release | Phase 7 | ✅ | StoreKit 2 sandbox flows | **built**, sandbox pending |
+| **I** | Monetization & Release | Phase 7 | ✅ | RevenueCat sandbox flows | **built**, dashboard + sandbox pending |
 
 ### Verifying states in the simulator
 
@@ -74,6 +74,7 @@ xcrun simctl launch <udid> com.altzet.DuoCam -DCDestination camera
     -DCSheet layout           # layout|adjustments|quality|settings
     -DCSimulatedEngine YES    # force synthetic streams even on hardware
     -DCPaywall YES            # the Pro paywall
+    -DCRevenueCatKey appl_…   # point this run at a real RevenueCat project
     -DCResolution uhd4K       # uhd4K|hd1080p|hd720p
     -DCFrameRate 60           # 24|30|60
     -DCRecordTest 6           # record N seconds, then report
@@ -214,14 +215,22 @@ for on page 4 and nowhere else.
 
 ### Phase I — Monetization
 
-`SubscriptionManager` (StoreKit 2, `Transaction.updates` listener started in
-`init`, entitlement read from `currentEntitlements` so expiry re-locks) and a
-single `EntitlementGate` every gated path routes through — 4K, 60 fps, split
-layouts, clean sources, manual controls, watermark. The paywall is contextual,
-annual pre-selected, dismissible, with no countdown and no dark pattern.
-`Products.storekit` plus a shared scheme make it testable from Xcode's Run
-action; `simctl launch` does not apply a scheme's StoreKit configuration, so
-product loading is unverified from the command line.
+`SubscriptionManager` (RevenueCat: offerings for the plan list, the customer
+info stream for updates that arrive from outside the app, one named entitlement
+so expiry re-locks) and a single `EntitlementGate` every gated path routes
+through — 4K, 60 fps, split layouts, clean sources, manual controls, watermark.
+The paywall is contextual, monthly pre-selected, dismissible, with no countdown
+and no dark pattern.
+
+The store lives in the dashboard, not in this repository: products, prices,
+which plans appear and what "Pro" means are all defined there, so the plan mix
+and the pricing change without an app release. `Purchasing` holds the only three
+values the app needs to find that configuration — the public SDK key, the
+entitlement identifier, and optionally an offering identifier — and every path
+tolerates them being unset, which is the state the app ships in until the
+dashboard exists: listed prices under the plan names, a disabled purchase
+button, and every entitlement check answering "free". `-DCRevenueCatKey appl_…`
+points a debug run at a real project without a rebuild.
 
 ### Three concurrent writers, 1080p30 (Doc 3 Phase 4 task 22)
 

@@ -39,6 +39,26 @@ struct OnboardingView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .analyticsScreen(AnalyticsScreen.onboarding, class: "OnboardingView")
+        .onAppear {
+            Analytics.log(AnalyticsEvent.onboardingStarted, [
+                AnalyticsParam.count: pages.count,
+            ])
+            logPageView(0)
+        }
+        // Every page is reported, not only the first and the last. The carousel
+        // is swipeable as well as buttoned, so the drop-off between pages is the
+        // only thing that says which promise stops holding attention — and a
+        // funnel of two points cannot show it.
+        .onChange(of: page) { _, index in logPageView(index) }
+    }
+
+    private func logPageView(_ index: Int) {
+        guard pages.indices.contains(index) else { return }
+        Analytics.log(AnalyticsEvent.onboardingPageViewed, [
+            AnalyticsParam.index: index,
+            AnalyticsParam.name: pages[index].analyticsName,
+        ])
     }
 
     // MARK: Background
@@ -72,7 +92,13 @@ struct OnboardingView: View {
         HStack {
             Spacer()
             if page < pages.count - 1 {
-                Button("Skip") { onFinish() }
+                Button("Skip") {
+                    Analytics.log(AnalyticsEvent.onboardingSkipped, [
+                        AnalyticsParam.index: page,
+                        AnalyticsParam.name: pages[page].analyticsName,
+                    ])
+                    onFinish()
+                }
                     .font(.system(size: 15))
                     .foregroundStyle(DC.Color.chromeSecondary)
                     .transition(.opacity)
@@ -125,6 +151,12 @@ struct OnboardingView: View {
     }
 
     private func advance() {
+        Analytics.log(AnalyticsEvent.onboardingContinueTapped, [
+            AnalyticsParam.index: page,
+            AnalyticsParam.name: pages[page].analyticsName,
+            AnalyticsParam.value: pages[page].actionTitle,
+        ])
+
         guard page == pages.count - 1 else {
             withAnimation(DC.Motion.resolve(DC.Motion.standard, reduceMotion: reduceMotion)) {
                 page += 1
@@ -138,6 +170,11 @@ struct OnboardingView: View {
         Task {
             await onRequestPermissions()
             isRequesting = false
+            // After the prompts, so the completion event sits *after* the two
+            // `permission_result`s in the session. Ordering is what makes the
+            // sequence readable as a funnel rather than as three unrelated rows.
+            Analytics.log(AnalyticsEvent.onboardingCompleted)
+            Analytics.setUserProperty(true, for: AnalyticsUserProperty.onboardingCompleted)
             onFinish()
         }
     }
@@ -150,6 +187,20 @@ nonisolated struct OnboardingPage: Sendable {
     let subtitle: String
     let actionTitle: String
     let mockup: MockupStyle
+
+    /// A stable name for the analytics event, taken from the mockup rather than
+    /// from the headline. Headlines are marketing copy and will be rewritten;
+    /// a page identified by its copy silently becomes a *new* page in the
+    /// dashboard the first time a word changes, which breaks the drop-off
+    /// comparison the event exists for.
+    var analyticsName: String {
+        switch mockup {
+        case .pipOverScene: "shoot_once_two_videos"
+        case .portraitWithRail: "portrait_and_landscape"
+        case .landmarkWithSelfie: "front_and_back"
+        case .permissionIllustration: "permission_request"
+        }
+    }
 
     enum MockupStyle: Sendable {
         case pipOverScene

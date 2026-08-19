@@ -71,11 +71,6 @@ final class AppRouter {
         resolveDestination()
     }
 
-    func replayOnboarding() {
-        hasCompletedOnboarding = false
-        destination = .onboarding
-    }
-
     /// Re-evaluate after returning from Settings — the user may have granted
     /// camera access while the app was backgrounded.
     func handleReturnToForeground() {

@@ -518,21 +518,21 @@ No monetization. No cloud, no accounts, no analytics beyond crash reporting.
 
 ### Scope
 
-- StoreKit 2 subscriptions
+- RevenueCat-managed subscriptions
 - Paywall
 - Entitlement gating
 - App Store assets and submission
 
 ### Technical Tasks
 
-1. Configure App Store Connect products: monthly, annual, lifetime (non-consumable).
-2. Implement `SubscriptionManager` using StoreKit 2 with `Transaction.currentEntitlements` observation and a listener task for external transactions.
+1. Configure App Store Connect products: weekly, monthly, lifetime (non-consumable), then mirror them in RevenueCat as products, an offering with one package each, and a single `pro` entitlement. Paste the public SDK key into `Purchasing.apiKey`.
+2. Implement `SubscriptionManager` on RevenueCat: offerings for the plan list, `customerInfoStream` for transactions that complete outside the app, and one named entitlement so expiry re-locks.
 3. Implement `EntitlementGate` as a single service other code queries — never scatter entitlement checks through view code.
 4. Gate the Pro features: 4K, 60 fps, split and diagonal layouts, clean source files, manual controls, watermark removal.
-5. Build the paywall per Document 2 §12.3. Annual pre-selected with a savings badge. No countdown timers, no fake scarcity.
+5. Build the paywall per Document 2 §12.3. Monthly pre-selected and badged. No countdown timers, no fake scarcity. Trial and intro lines are shown only to users RevenueCat reports as *eligible* — a product keeps its introductory offer forever, so the offer's mere existence is not permission to advertise it.
 6. Trigger the paywall contextually — when the user taps a gated feature — never on cold launch.
 7. Implement restore purchases.
-8. Verify all StoreKit flows in Sandbox: purchase, restore, upgrade, downgrade, cancellation, expiry, refund, family sharing.
+8. Verify all flows in Sandbox, watching RevenueCat's own event feed as well as the app: purchase, restore, upgrade, downgrade, cancellation, expiry, refund, family sharing.
 9. Prepare App Store assets: icon, screenshots per device class, preview video, description, keywords, privacy nutrition label.
 10. Complete the App Privacy questionnaire accurately.
 11. Prepare and host the privacy policy and terms.

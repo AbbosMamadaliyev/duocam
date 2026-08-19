@@ -3,13 +3,13 @@
   "nonRenewingSubscriptions" : [],
   "products" : [
     {
-      "displayPrice" : "39.99",
+      "displayPrice" : "29.99",
       "familyShareable" : false,
       "internalID" : "DC-LIFETIME",
       "localizations" : [
         {
           "description" : "Every Pro feature, once, forever.",
-          "displayName" : "DuoCam Pro Lifetime",
+          "displayName" : "DuoRec Pro Lifetime",
           "locale" : "en_US"
         }
       ],
@@ -26,45 +26,45 @@
     {
       "id" : "DC-PRO-GROUP",
       "localizations" : [],
-      "name" : "DuoCam Pro",
+      "name" : "DuoRec Pro",
       "subscriptions" : [
         {
           "adHocOffers" : [],
-          "displayPrice" : "4.99",
+          "displayPrice" : "3.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "DC-WEEKLY",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "4K, 60fps, unlimited dual capture, clean sources, no watermark.",
+              "displayName" : "DuoRec Pro Weekly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.altzet.DuoCam.pro.weekly",
+          "recurringSubscriptionPeriod" : "P1W",
+          "referenceName" : "Pro Weekly",
+          "subscriptionGroupID" : "DC-PRO-GROUP",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [],
+          "displayPrice" : "12.99",
           "familyShareable" : false,
           "groupNumber" : 1,
           "internalID" : "DC-MONTHLY",
           "introductoryOffer" : null,
           "localizations" : [
             {
-              "description" : "4K, 60fps, all layouts, clean sources, no watermark.",
-              "displayName" : "DuoCam Pro Monthly",
+              "description" : "4K, 60fps, unlimited dual capture, clean sources, no watermark.",
+              "displayName" : "DuoRec Pro Monthly",
               "locale" : "en_US"
             }
           ],
           "productID" : "com.altzet.DuoCam.pro.monthly",
           "recurringSubscriptionPeriod" : "P1M",
           "referenceName" : "Pro Monthly",
-          "subscriptionGroupID" : "DC-PRO-GROUP",
-          "type" : "RecurringSubscription"
-        },
-        {
-          "adHocOffers" : [],
-          "displayPrice" : "35.99",
-          "familyShareable" : false,
-          "groupNumber" : 1,
-          "internalID" : "DC-ANNUAL",
-          "introductoryOffer" : null,
-          "localizations" : [
-            {
-              "description" : "4K, 60fps, all layouts, clean sources, no watermark.",
-              "displayName" : "DuoCam Pro Annual",
-              "locale" : "en_US"
-            }
-          ],
-          "productID" : "com.altzet.DuoCam.pro.annual",
-          "recurringSubscriptionPeriod" : "P1Y",
-          "referenceName" : "Pro Annual",
           "subscriptionGroupID" : "DC-PRO-GROUP",
           "type" : "RecurringSubscription"
         }

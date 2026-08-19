@@ -11,6 +11,7 @@ struct RootView: View {
     @Environment(AppRouter.self) private var router
     @Environment(PermissionManager.self) private var permissions
     @Environment(EntitlementGate.self) private var entitlements
+    @Environment(SubscriptionManager.self) private var subscriptions
 
     /// Built once the capability probe knows which engine this device needs.
     @State private var cameraModel: CameraViewModel?
@@ -25,6 +26,7 @@ struct RootView: View {
                 switch router.destination {
                 case .launching:
                     LaunchingView()
+                        .analyticsScreen(AnalyticsScreen.launching, class: "LaunchingView")
                 case .onboarding:
                     OnboardingView(
                         onFinish: { router.completeOnboarding() },
@@ -59,7 +61,33 @@ struct RootView: View {
                 print(report.consoleDump)
                 fflush(stdout)
             }
+
+            // The hardware answer, once per launch. Everything downstream — which
+            // modes the selector offers, whether the dual-capture gate is ever
+            // reachable, which engine runs — follows from this, so a funnel that
+            // cannot segment on it is reading three device classes as one.
+            Analytics.log(AnalyticsEvent.deviceCapabilityProbed, [
+                AnalyticsParam.deviceModel: report.deviceModel,
+                AnalyticsParam.systemVersion: report.systemVersion,
+                AnalyticsParam.multiCamSupported: report.isMultiCamSupported,
+                AnalyticsParam.availableModes: report.availableModes
+                    .map(\.rawValue).joined(separator: ","),
+            ])
+            Analytics.setUserProperty(
+                report.isMultiCamSupported,
+                for: AnalyticsUserProperty.multiCamSupported
+            )
+
             let engine = Self.makeEngine(for: report)
+            let engineName = engine is SimulatedCaptureEngine
+                ? AnalyticsValue.engineSimulated
+                : AnalyticsValue.engineMultiCam
+            Analytics.log(AnalyticsEvent.captureEngineSelected, [
+                AnalyticsParam.engine: engineName,
+                AnalyticsParam.multiCamSupported: report.isMultiCamSupported,
+            ])
+            Analytics.setUserProperty(engineName, for: AnalyticsUserProperty.captureEngine)
+
             let model = CameraViewModel(
                 engine: engine,
                 availableModes: Self.availableModes(for: report, engine: engine),
@@ -67,19 +95,60 @@ struct RootView: View {
             )
             model.capabilityReport = report
             model.entitlements = entitlements
-            if DebugFlags.opensPaywall { entitlements.isShowingPaywall = true }
+
+            // A gate can fire from inside the Quality, Settings or PiP Parameter
+            // sheet, and UIKit will not present the paywall from here while one
+            // of those is up — the tap would simply do nothing, which reads as a
+            // dead control rather than a locked feature. The gate closes the
+            // camera's sheet first and waits out its dismissal.
+            //
+            // `weak` because the gate outlives nothing but the app: a strong
+            // capture here would pin the camera model and its engine for the
+            // whole process lifetime.
+            entitlements.dismissPresentedSheet = { [weak model] in
+                guard let model, model.activeSheet != nil else { return false }
+                model.activeSheet = nil
+                return true
+            }
+
             cameraModel = model
             router.resolveDestination()
+
+            // After `resolveDestination`, because where the launch *lands* is the
+            // most useful thing about it: an install that opens onto the
+            // permission wall and one that opens onto a live camera are two
+            // different sessions, and only this event can tell them apart.
+            Analytics.log(AnalyticsEvent.appLaunched, [
+                AnalyticsParam.destination: String(describing: router.destination),
+                AnalyticsParam.isPro: entitlements.isPro,
+                AnalyticsParam.engine: engineName,
+                AnalyticsParam.multiCamSupported: report.isMultiCamSupported,
+                AnalyticsParam.mode: model.configuration.mode.rawValue,
+            ])
+            Analytics.setUserProperty(
+                router.hasCompletedOnboarding,
+                for: AnalyticsUserProperty.onboardingCompleted
+            )
+
+            if DebugFlags.opensPaywall {
+                entitlements.present(nil, trigger: AnalyticsValue.triggerDebugFlag)
+            } else {
+                await presentPeriodicPaywallIfDue()
+            }
         }
         .sheet(isPresented: Binding(
             get: { router.isShowingCapabilityInspector },
             set: { router.isShowingCapabilityInspector = $0 }
         )) {
             CapabilityInspectorView()
+                .analyticsScreen(
+                    AnalyticsScreen.capabilityInspector,
+                    class: "CapabilityInspectorView"
+                )
         }
-        // Doc 3 Phase 7 task 6: the paywall is raised by a gate, in context —
-        // never on cold launch. Presenting it here rather than inside the
-        // camera screen means a gate in Settings or the gallery reaches it too.
+        // Doc 3 Phase 7 task 6: the paywall is raised by a gate, in context.
+        // Presenting it here rather than inside the camera screen means a gate in
+        // Settings or the gallery reaches it too.
         .sheet(isPresented: Binding(
             get: { entitlements.isShowingPaywall },
             set: { entitlements.isShowingPaywall = $0 }
@@ -87,6 +156,42 @@ struct RootView: View {
             PaywallView(context: entitlements.pendingFeature)
                 .presentationDetents([.large])
         }
+        // A completed purchase hands the free allowance back. Without this, a
+        // subscription that later lapses would resume mid-cycle — the user's
+        // first press after expiry could be the third one, and a paywall on the
+        // very first capture after paying for a month reads as a bug.
+        .onChange(of: subscriptions.isPro) { _, isPro in
+            if isPro { entitlements.freeTier.reset() }
+        }
+    }
+
+    /// The every-fourth-launch reminder (free tier only).
+    ///
+    /// Doc 3 Phase 7 task 6's rule was "contextual, never on cold launch", and
+    /// this is the one deliberate exception to it: a periodic, countable prompt
+    /// rather than one on every launch, which is what makes it a reminder instead
+    /// of a toll gate. Launches one to three pass untouched; the fourth shows the
+    /// sheet and returns the count to zero.
+    ///
+    /// Three conditions before it may appear, and all three matter:
+    ///
+    /// - **Entitlement is refreshed first.** `isPro` is `false` until
+    ///   RevenueCat has answered, and asking too early would show a paying
+    ///   subscriber the paywall on every fourth launch.
+    /// - **Only from the camera.** Over onboarding it would interrupt the
+    ///   permission flow, and over the access-needed screen it would ask for
+    ///   money to unlock a camera the app cannot open at all.
+    /// - **After a beat.** Presented into the same frame as the first preview it
+    ///   arrives over a black screen, so it reads as the app having failed to
+    ///   launch rather than as an offer.
+    private func presentPeriodicPaywallIfDue() async {
+        await subscriptions.refreshEntitlements()
+        guard !entitlements.isPro, router.destination == .camera else { return }
+        guard entitlements.registerLaunch() else { return }
+
+        try? await Task.sleep(for: .milliseconds(900))
+        guard router.destination == .camera, !entitlements.isShowingPaywall else { return }
+        entitlements.present(nil, trigger: AnalyticsValue.triggerLaunchReminder)
     }
 
     /// The composition root's one real decision (build plan deviation D-1).
@@ -153,7 +258,7 @@ struct CameraAccessNeededView: View {
                 .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(.white)
 
-            Text("DuoCam records from your front and back cameras at the same time, "
+            Text("DuoRec records from your front and back cameras at the same time, "
                  + "so you can capture the scene and your reaction in one take. "
                  + "Without camera access there is nothing to record.")
             .font(.system(size: 16))
@@ -164,7 +269,7 @@ struct CameraAccessNeededView: View {
             Spacer()
 
             Button {
-                permissions.openSystemSettings()
+                permissions.openSystemSettings(source: AnalyticsValue.sourcePermissionScreen)
             } label: {
                 Text("Open Settings")
                     .font(.system(size: 17, weight: .semibold))
@@ -176,6 +281,7 @@ struct CameraAccessNeededView: View {
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
         }
+        .analyticsScreen(AnalyticsScreen.cameraAccessNeeded, class: "CameraAccessNeededView")
     }
 }
 

@@ -66,12 +66,24 @@ final class PermissionManager {
         camera.isUsable && !microphone.isUsable && !hasDismissedMicrophoneBanner
     }
 
+    /// The two prompts are reported separately, and only when a prompt was
+    /// actually shown.
+    ///
+    /// The `notDetermined` guard is what makes the number meaningful: without it
+    /// every re-entry into onboarding would log another "granted" for a decision
+    /// the user made once, and the grant rate would climb towards 100% on its
+    /// own.
     @discardableResult
     func requestCameraAccess() async -> PermissionState {
         guard camera == .notDetermined else { return camera }
         let granted = await AVCaptureDevice.requestAccess(for: .video)
         camera = granted ? .authorized : .denied
         Log.ui.info("Camera permission → \(self.camera.rawValue, privacy: .public)")
+        Analytics.log(AnalyticsEvent.permissionResult, [
+            AnalyticsParam.name: "camera",
+            AnalyticsParam.result: granted
+                ? AnalyticsValue.resultGranted : AnalyticsValue.resultDenied,
+        ])
         return camera
     }
 
@@ -81,6 +93,11 @@ final class PermissionManager {
         let granted = await AVCaptureDevice.requestAccess(for: .audio)
         microphone = granted ? .authorized : .denied
         Log.ui.info("Microphone permission → \(self.microphone.rawValue, privacy: .public)")
+        Analytics.log(AnalyticsEvent.permissionResult, [
+            AnalyticsParam.name: "microphone",
+            AnalyticsParam.result: granted
+                ? AnalyticsValue.resultGranted : AnalyticsValue.resultDenied,
+        ])
         return microphone
     }
 
@@ -91,8 +108,15 @@ final class PermissionManager {
         await requestMicrophoneAccess()
     }
 
-    func openSystemSettings() {
+    /// The one exit from a denied camera. `source` because this is a leave-the-app
+    /// event: how many people take it, and from where, is the only measure of
+    /// whether the recovery screen recovers anyone.
+    func openSystemSettings(source: String = AnalyticsValue.sourcePermissionScreen) {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        Analytics.log(AnalyticsEvent.permissionSettingsOpened, [
+            AnalyticsParam.source: source,
+            AnalyticsParam.name: camera.rawValue,
+        ])
         UIApplication.shared.open(url)
     }
 }

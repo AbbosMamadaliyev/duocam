@@ -196,9 +196,44 @@ enum DebugFlags {
     /// Present the paywall on launch.
     static var opensPaywall: Bool { flag("DCPaywall") }
 
+    /// Point a debug run at a real RevenueCat project without editing
+    /// `Purchasing.apiKey` and rebuilding:
+    ///
+    /// ```
+    /// xcrun simctl launch <udid> com.altzet.DuoCam -DCRevenueCatKey appl_xxx
+    /// ```
+    ///
+    /// The only way to see live prices and a real purchase flow before the key
+    /// is committed — and the reason the paywall's offer path can be exercised
+    /// at all while the dashboard is still being set up.
+    static var revenueCatAPIKey: String? { string("DCRevenueCatKey") }
+
+    /// Print the free-tier shutter gate's decision for a run of presses in every
+    /// mode, without capturing anything.
+    ///
+    /// The gate is the one piece of the paywall whose behaviour is a *sequence* —
+    /// the third press of each shutter is refused, and the two shutters count
+    /// apart — and a sequence of taps is exactly what the simulator cannot be
+    /// scripted into. Nine presses per shutter per mode is enough to show three
+    /// cycles of the pattern, which is what distinguishes "every third" from
+    /// "after the second".
+    static var dumpsCaptureGate: Bool { flag("DCGateTest") }
+
     /// Present a sheet on launch: `layout`, `adjustments`, `quality`,
     /// `settings`, `pipParameters`.
     static var forcedSheet: CameraSheet? {
         string("DCSheet").flatMap(CameraSheet.init(rawValue:))
     }
+
+    /// Skip `FirebaseApp.configure()` entirely, so a debug run sends nothing.
+    ///
+    /// The debug launch flags above drive the app through states no user would
+    /// reach — nine gate presses in a row, a lens walked end to end, a recording
+    /// that starts before the session settles — and every one of them would land
+    /// in the same property as real traffic. This is how a diagnostic run stays
+    /// out of the numbers it would otherwise distort.
+    ///
+    /// Console logging of each event continues regardless, which is what makes
+    /// the instrumentation itself reviewable in the simulator.
+    static var disablesAnalytics: Bool { flag("DCNoAnalytics") }
 }

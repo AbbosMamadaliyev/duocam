@@ -89,7 +89,7 @@ struct PiPParameterSheet: View {
                     title: "Corner radius",
                     value: Binding(
                         get: { Double(model.overlayBorder.cornerRadius) },
-                        set: { model.overlayBorder.cornerRadius = CGFloat($0) }
+                        set: { model.setOverlayCornerRadius(CGFloat($0)) }
                     ),
                     range: 0...Double(OverlayBorderStyle.maximumCornerRadius),
                     format: { "\(Int($0.rounded()))" }
@@ -99,7 +99,7 @@ struct PiPParameterSheet: View {
                     title: "Thickness",
                     value: Binding(
                         get: { Double(model.overlayBorder.width) },
-                        set: { model.overlayBorder.width = CGFloat($0) }
+                        set: { model.setOverlayBorderWidth(CGFloat($0)) }
                     ),
                     range: 0...Double(OverlayBorderStyle.maximumWidth),
                     // One decimal, because the whole range is three points wide
@@ -140,6 +140,12 @@ struct PiPParameterSheet: View {
                 .font(DC.Font.sheetTitle)
                 .foregroundStyle(DC.Color.chromePrimary)
 
+            // The sheet opens for everyone and every control in it is live to
+            // the touch; what a free user gets back is the paywall rather than a
+            // changed border. Saying so up here is the difference between a
+            // locked feature and a broken one.
+            if model.isPiPParameterLocked { ProBadge() }
+
             Spacer()
 
             // Shown only when there is something to undo, so the row is not
@@ -172,7 +178,7 @@ struct PiPParameterSheet: View {
                     "Custom colour",
                     selection: Binding(
                         get: { model.overlayBorder.swiftUIColor },
-                        set: { model.overlayBorder.apply($0) }
+                        set: { model.applyOverlayBorderColor($0) }
                     ),
                     supportsOpacity: true
                 )
@@ -202,11 +208,12 @@ struct PiPParameterSheet: View {
             // The opacity survives the change. A user who dialled their border
             // back to 40% is choosing a *colour*, not asking for the
             // transparency to be undone.
-            model.overlayBorder.setColor(
+            model.setOverlayBorderColor(
                 red: swatch.red,
                 green: swatch.green,
                 blue: swatch.blue,
-                opacity: model.overlayBorder.opacity
+                opacity: model.overlayBorder.opacity,
+                name: swatch.name.lowercased()
             )
             HapticEngine.shared.sliderDetent()
         } label: {

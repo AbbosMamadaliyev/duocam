@@ -52,6 +52,7 @@ struct CaptureDetailView: View {
         }
         .animation(DC.Motion.standard, value: toast)
         .statusBarHidden()
+        .analyticsScreen(AnalyticsScreen.captureDetail, class: "CaptureDetailView")
         .task { preparePlayer() }
         .onDisappear {
             player?.pause()
@@ -113,9 +114,18 @@ struct CaptureDetailView: View {
 
     private var actionRow: some View {
         HStack(spacing: 28) {
+            // A simultaneous gesture, not a replacement one: `ShareLink` owns
+            // the tap and offers no action closure, and consuming it here would
+            // cost the user the share sheet to gain an event.
             ShareLink(item: record.compositedURL) {
                 actionLabel("Share", "square.and.arrow.up")
             }
+            .simultaneousGesture(TapGesture().onEnded {
+                Analytics.log(AnalyticsEvent.captureShareTapped, [
+                    AnalyticsParam.source: AnalyticsValue.sourceCaptureDetail,
+                    AnalyticsParam.mediaType: record.analyticsMediaType,
+                ])
+            })
 
             Menu {
                 ForEach(ExportPreset.allCases) { preset in
@@ -126,18 +136,35 @@ struct CaptureDetailView: View {
             }
 
             if !record.isPhoto {
-                Button { isTrimming.toggle() } label: {
+                Button {
+                    isTrimming.toggle()
+                    Analytics.log(AnalyticsEvent.trimToggled, [
+                        AnalyticsParam.enabled: isTrimming,
+                        AnalyticsParam.durationSeconds: record.duration,
+                    ])
+                } label: {
                     actionLabel("Trim", "scissors")
                 }
             }
 
             if record.hasCleanSources {
-                Button { showingSourcePicker = true } label: {
+                Button {
+                    Analytics.log(AnalyticsEvent.cleanSourcesOpened, [
+                        AnalyticsParam.source: AnalyticsValue.sourceCaptureDetail,
+                        AnalyticsParam.mode: record.mode.rawValue,
+                    ])
+                    showingSourcePicker = true
+                } label: {
                     actionLabel("Sources", "rectangle.on.rectangle")
                 }
             }
 
             Button(role: .destructive) {
+                Analytics.log(AnalyticsEvent.captureDeleted, [
+                    AnalyticsParam.source: AnalyticsValue.sourceCaptureDetail,
+                    AnalyticsParam.mediaType: record.analyticsMediaType,
+                    AnalyticsParam.count: 1,
+                ])
                 CaptureLibrary.deleteFiles(for: record)
                 context.delete(record)
                 try? context.save()
@@ -217,9 +244,24 @@ struct CaptureDetailView: View {
 
     // MARK: Export
 
+    /// Export is reported in three parts — started, completed, failed — because
+    /// it is the app's one long-running user-facing operation, and a single
+    /// "exported" count cannot distinguish a preset nobody picks from one that
+    /// never finishes. `watermark` rides along as the free-tier marker: exports
+    /// that carried one are the population the paywall is arguing with.
     private func export(_ preset: ExportPreset) {
         exportTask?.cancel()
         exportProgress = 0
+
+        let parameters: [String: Any] = [
+            AnalyticsParam.preset: preset.rawValue,
+            AnalyticsParam.mediaType: record.analyticsMediaType,
+            AnalyticsParam.trimmed: isTrimming,
+            AnalyticsParam.watermark: entitlements.exportsWatermark,
+            AnalyticsParam.durationSeconds: record.duration,
+        ]
+        Analytics.log(AnalyticsEvent.exportStarted, parameters)
+
         exportTask = Task {
             do {
                 let range = isTrimming
@@ -235,11 +277,23 @@ struct CaptureDetailView: View {
                 }
                 await PhotoLibraryExporter.saveToPhotos(url, isPhoto: record.isPhoto)
                 exportProgress = nil
+                Analytics.log(AnalyticsEvent.exportCompleted, parameters)
+                Analytics.log(AnalyticsEvent.savedToPhotoLibrary, [
+                    AnalyticsParam.source: AnalyticsValue.sourceCaptureDetail,
+                    AnalyticsParam.mediaType: record.analyticsMediaType,
+                ])
                 showToast("Exported to Photos")
             } catch is CancellationError {
                 exportProgress = nil
+                Analytics.log(AnalyticsEvent.exportCancelled, parameters)
             } catch {
                 exportProgress = nil
+                Analytics.log(
+                    AnalyticsEvent.exportFailed,
+                    parameters.merging([AnalyticsParam.reason: error.localizedDescription]) {
+                        current, _ in current
+                    }
+                )
                 showToast(error.localizedDescription)
             }
         }

@@ -119,6 +119,7 @@ struct CameraScreen: View {
         // larger accessibility steps overflow them. Sheets, Settings, Gallery
         // and Onboarding are outside this modifier and stay uncapped.
         .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        .analyticsScreen(AnalyticsScreen.camera, class: "CameraScreen")
         .task { await model.start() }
         .sheet(item: Binding(get: { model.activeSheet }, set: { model.activeSheet = $0 })) { sheet in
             sheetContent(sheet)
@@ -224,7 +225,7 @@ struct CameraScreen: View {
 
     private var previewDoubleTapGesture: some Gesture {
         TapGesture(count: 2).onEnded {
-            withAnimation(DC.Motion.fade) { model.isChromeHidden.toggle() }
+            withAnimation(DC.Motion.fade) { model.toggleChromeHidden() }
         }
     }
 
@@ -253,17 +254,25 @@ struct CameraScreen: View {
 
     @ViewBuilder
     private func sheetContent(_ sheet: CameraSheet) -> some View {
+        // Each sheet names itself. Left untracked they would all report as the
+        // camera screen underneath them, and the four surfaces the app's whole
+        // configuration lives on would be invisible in the screen report.
         switch sheet {
         case .layout:
             LayoutSheet(model: model)
+                .analyticsScreen(AnalyticsScreen.sheetLayout, class: "LayoutSheet")
         case .adjustments:
             AdjustmentsSheet(model: model)
+                .analyticsScreen(AnalyticsScreen.sheetAdjustments, class: "AdjustmentsSheet")
         case .quality:
             QualitySheet(model: model)
+                .analyticsScreen(AnalyticsScreen.sheetQuality, class: "QualitySheet")
         case .settings:
             SettingsPlaceholderSheet(model: model)
+                .analyticsScreen(AnalyticsScreen.sheetSettings, class: "SettingsSheet")
         case .pipParameters:
             PiPParameterSheet(model: model)
+                .analyticsScreen(AnalyticsScreen.sheetPiPParameter, class: "PiPParameterSheet")
         }
     }
 }
@@ -316,7 +325,7 @@ private struct TopCluster: View {
             // used nor acted on is chrome over the shot.
             if !model.isRecording {
                 QualityPill(quality: model.negotiatedQuality) {
-                    model.activeSheet = .quality
+                    model.presentSheet(.quality, from: AnalyticsValue.sourceQualityPill)
                 }
                 .transition(.scale.combined(with: .opacity))
             }
@@ -392,7 +401,7 @@ private struct TopCluster: View {
                     systemImage: "gearshape",
                     accessibilityLabel: "Settings"
                 ) {
-                    model.activeSheet = .settings
+                    model.presentSheet(.settings, from: AnalyticsValue.sourceCameraChrome)
                 }
                 .transition(.scale.combined(with: .opacity))
             }
@@ -486,7 +495,7 @@ private struct BottomCluster: View {
                     accessibilityLabel: "Layout",
                     accessibilityHint: "Choose how the two streams are arranged"
                 ) {
-                    model.activeSheet = .layout
+                    model.presentSheet(.layout, from: AnalyticsValue.sourceCameraChrome)
                 }
                 .offset(
                     x: -halfWidth + DC.Spacing.edgeMargin
@@ -596,7 +605,7 @@ private struct GalleryButton: View {
 
     var body: some View {
         Button {
-            model.isShowingGallery = true
+            model.openGallery()
         } label: {
             // A circle, like every other control in this row. It was the one
             // rounded square among four discs, which read as an element from a
@@ -656,7 +665,7 @@ private struct RecordingControlStack: View {
                 accessibilityLabel: "Torch",
                 accessibilityValue: model.configuration.isTorchOn ? "On" : "Off"
             ) {
-                model.toggleTorch()
+                model.toggleTorch(source: AnalyticsValue.sourceRecordingStack)
             }
         }
     }
@@ -761,7 +770,9 @@ private struct SplitDividerHandle: View {
                 }
         )
         .simultaneousGesture(
-            TapGesture(count: 2).onEnded { model.swapStreams() }
+            TapGesture(count: 2).onEnded {
+                model.swapStreams(source: AnalyticsValue.sourceSplitDivider)
+            }
         )
         .accessibilityLabel("Split divider")
         .accessibilityValue("\(Int(model.splitRatio * 100)) percent")

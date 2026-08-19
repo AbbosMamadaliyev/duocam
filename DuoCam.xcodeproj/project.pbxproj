@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		AA0001FB0000000000000001 /* FirebaseAnalytics in Frameworks */ = {isa = PBXBuildFile; productRef = AA0002FB0000000000000002 /* FirebaseAnalytics */; };
+		CE527C9D3035C1C100DB7574 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = AA0002FB0000000000000004 /* RevenueCat */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		CE5263EA302EC46700DB7574 /* DuoCam.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DuoCam.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +28,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CE527C9D3035C1C100DB7574 /* RevenueCat in Frameworks */,
+				AA0001FB0000000000000001 /* FirebaseAnalytics in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +72,8 @@
 			);
 			name = DuoCam;
 			packageProductDependencies = (
+				AA0002FB0000000000000002 /* FirebaseAnalytics */,
+				AA0002FB0000000000000004 /* RevenueCat */,
 			);
 			productName = DuoCam;
 			productReference = CE5263EA302EC46700DB7574 /* DuoCam.app */;
@@ -94,6 +103,10 @@
 			);
 			mainGroup = CE5263E1302EC46600DB7574;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AA0003FB0000000000000003 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+				AA0003FB0000000000000005 /* XCRemoteSwiftPackageReference "purchases-ios" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = CE5263EB302EC46700DB7574 /* Products */;
 			projectDirPath = "";
@@ -258,10 +271,10 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = DuoRec;
-				INFOPLIST_KEY_NSCameraUsageDescription = "DuoCam records from two cameras at once, so you can capture the scene and your reaction in a single take.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "DuoCam records audio with your video. Without microphone access your recordings will be silent.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "DuoCam saves the videos and photos you capture to your photo library.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "DuoCam needs photo library access to show your saved captures and let you export them.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "DuoRec records from two cameras at once, so you can capture the scene and your reaction in a single take.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "DuoRec records audio with your video. Without microphone access your recordings will be silent.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "DuoRec saves the videos and photos you capture to your photo library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "DuoRec needs photo library access to show your saved captures and let you export them.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -296,10 +309,10 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = DuoRec;
-				INFOPLIST_KEY_NSCameraUsageDescription = "DuoCam records from two cameras at once, so you can capture the scene and your reaction in a single take.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "DuoCam records audio with your video. Without microphone access your recordings will be silent.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "DuoCam saves the videos and photos you capture to your photo library.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "DuoCam needs photo library access to show your saved captures and let you export them.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "DuoRec records from two cameras at once, so you can capture the scene and your reaction in a single take.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "DuoRec records audio with your video. Without microphone access your recordings will be silent.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "DuoRec saves the videos and photos you capture to your photo library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "DuoRec needs photo library access to show your saved captures and let you export them.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -344,6 +357,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AA0003FB0000000000000003 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.17.0;
+			};
+		};
+		AA0003FB0000000000000005 /* XCRemoteSwiftPackageReference "purchases-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/RevenueCat/purchases-ios.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.84.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA0002FB0000000000000002 /* FirebaseAnalytics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0003FB0000000000000003 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAnalytics;
+		};
+		AA0002FB0000000000000004 /* RevenueCat */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0003FB0000000000000005 /* XCRemoteSwiftPackageReference "purchases-ios" */;
+			productName = RevenueCat;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = CE5263E2302EC46600DB7574 /* Project object */;
 }

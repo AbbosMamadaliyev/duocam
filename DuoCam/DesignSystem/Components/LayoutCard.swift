@@ -14,13 +14,14 @@ import SwiftUI
 /// of the sheet, which is what the layout sheet looked like on every device
 /// narrower than a Pro Max. `maxWidth: .infinity` divides whatever the row
 /// actually has, so the margins hold at every width.
+/// There is no locked state. Split and diagonal used to carry a lock badge and
+/// raise the paywall on tap; the gate now sits on the shutter in both dual
+/// modes, so charging for the arrangement as well refused one recording twice —
+/// and a lock on the arrangement hides the only thing the preview is there to
+/// demonstrate.
 struct LayoutCard: View {
     let layout: LayoutType
     let isSelected: Bool
-    /// Marks a layout the current entitlement does not cover. The card stays
-    /// tappable — tapping is what raises the paywall — it just stops looking
-    /// identical to the three that are already paid for.
-    var isLocked: Bool = false
     var action: () -> Void = {}
 
     /// Tall enough for the schematic plus its caption, and a comfortable target
@@ -42,16 +43,6 @@ struct LayoutCard: View {
             VStack(spacing: 8) {
                 LayoutSchematic(layout: layout, isSelected: isSelected)
                     .frame(width: Self.schematicWidth, height: Self.schematicHeight)
-                    .overlay(alignment: .topLeading) {
-                        if isLocked {
-                            Image(systemName: "lock.fill")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.black)
-                                .frame(width: 16, height: 16)
-                                .background(DC.Color.accent, in: Circle())
-                                .offset(x: -6, y: -6)
-                        }
-                    }
 
                 Text(layout.caption)
                     .font(DC.Font.pillCaption)
@@ -82,10 +73,7 @@ struct LayoutCard: View {
         .buttonStyle(.plain)
         .dcAnimation(DC.Motion.standard, value: isSelected)
         .accessibilityLabel(layout.caption)
-        .accessibilityValue(isLocked ? "Pro" : "")
-        .accessibilityHint(isLocked
-            ? "Requires DuoCam Pro. Opens the upgrade screen"
-            : "Applies this layout immediately")
+        .accessibilityHint("Applies this layout immediately")
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 }

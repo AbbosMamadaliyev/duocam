@@ -135,7 +135,7 @@ enum MediaExporter {
 
         let scale = renderSize.width / 1080
         let text = CATextLayer()
-        text.string = "DuoCam"
+        text.string = "DuoRec"
         text.font = UIFont.systemFont(ofSize: 1, weight: .semibold)
         text.fontSize = 34 * scale
         text.foregroundColor = UIColor.white.withAlphaComponent(0.85).cgColor
@@ -232,7 +232,7 @@ extension MediaExporter {
                 .font: UIFont.systemFont(ofSize: 34 * scale, weight: .semibold),
                 .foregroundColor: UIColor.white.withAlphaComponent(0.85),
             ]
-            let text = NSAttributedString(string: "DuoCam", attributes: attributes)
+            let text = NSAttributedString(string: "DuoRec", attributes: attributes)
             let size = text.size()
             text.draw(at: CGPoint(
                 x: image.size.width - size.width - 40 * scale,

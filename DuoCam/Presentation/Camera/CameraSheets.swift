@@ -38,16 +38,17 @@ struct LayoutSheet: View {
                 .font(DC.Font.sheetTitle)
                 .foregroundStyle(DC.Color.chromePrimary)
 
+            // No lock on any card. Split and diagonal used to carry one, and
+            // tapping them raised the paywall; the gate now sits on the shutter
+            // in both dual modes, so charging for the arrangement as well
+            // refused the same user twice for one recording. Choosing how the
+            // two streams sit is free — it is the thing the preview exists to
+            // show.
             HStack(spacing: Self.cardGap) {
                 ForEach(LayoutType.allCases) { layout in
                     LayoutCard(
                         layout: layout,
-                        isSelected: layout == model.configuration.layout,
-                        // Doc 1 §4.5 gates the split layouts. Tapping one has
-                        // always raised the paywall; until now the card gave no
-                        // sign of it beforehand, so the paywall arrived as a
-                        // surprise in place of the layout the user asked for.
-                        isLocked: layout.isSplit && model.entitlements?.isPro == false
+                        isSelected: layout == model.configuration.layout
                     ) {
                         model.select(layout: layout)
                     }
@@ -237,59 +238,7 @@ struct QualitySheet: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Resolution") {
-                    ForEach(Resolution.allCases) { resolution in
-                        optionRow(
-                            title: resolution.displayName,
-                            isSelected: model.configuration.quality.resolution == resolution,
-                            unavailableReason: reason(for: resolution),
-                            isPro: resolution == .uhd4K
-                        ) {
-                            model.selectResolution(resolution)
-                        }
-                    }
-                }
-
-                Section("Frame rate") {
-                    ForEach(FrameRate.allCases) { rate in
-                        optionRow(
-                            title: rate.displayName,
-                            isSelected: model.configuration.quality.frameRate == rate,
-                            unavailableReason: reason(for: rate),
-                            isPro: rate == .fps60
-                        ) {
-                            model.selectFrameRate(rate)
-                        }
-                    }
-                }
-
-                Section("Codec") {
-                    ForEach(VideoCodec.allCases) { codec in
-                        optionRow(
-                            title: codec.displayName,
-                            isSelected: model.configuration.quality.codec == codec,
-                            unavailableReason: nil,
-                            isPro: false
-                        ) {
-                            model.configuration.quality.codec = codec
-                        }
-                    }
-                }
-
-                Section {
-                    Toggle(isOn: Binding(
-                        get: { model.configuration.quality.savesCleanSources },
-                        set: { model.setSavesCleanSources($0) }
-                    )) {
-                        HStack {
-                            Text("Save clean sources")
-                            if model.entitlements?.isPro == false { ProBadge() }
-                        }
-                    }
-                } footer: {
-                    Text("Also writes each camera's untouched footage, so you can "
-                         + "re-edit the composition later.")
-                }
+                QualityOptionRows(model: model)
 
                 Section {
                     LabeledContent("Hardware cost") {
@@ -309,20 +258,120 @@ struct QualitySheet: View {
         .presentationDetents([.height(420), .large])
         .presentationBackground(.regularMaterial)
     }
+}
 
+// MARK: - Quality options, shared
+
+/// The resolution, frame rate, codec and clean-source controls, as `List`
+/// sections.
+///
+/// **One view, two call sites, on purpose.** These controls used to exist twice
+/// — as tappable rows in the Quality sheet and as `Picker`s inside Settings —
+/// and the two copies did not agree. The sheet validated every combination
+/// against the probed constraint matrix and refused what this device cannot
+/// deliver; the Settings pickers applied anything, so a resolution the sheet
+/// greyed out was selectable one screen away, the engine quietly negotiated it
+/// back down, and the quality pill then read a tier neither list had a tick
+/// beside. The Pro badges were duplicated too, which is how a gate ends up on
+/// one of two paths to the same setting.
+///
+/// Sharing the view is what makes "change it in one place, see it in the others"
+/// true by construction rather than by remembering to edit both.
+/// The probe the constraint matrix needs is applied by each *parent* rather than
+/// attached inside this view. These children are `Section`s, and a modifier on a
+/// `Group` is applied to each child — wrapping a `Section` in a `ModifiedContent`
+/// is how a `List` stops recognising it as a section and drops its header.
+struct QualityOptionRows: View {
+    @Bindable var model: CameraViewModel
+
+    var body: some View {
+        Group {
+            Section("Resolution") {
+                ForEach(Resolution.allCases) { resolution in
+                    optionRow(
+                        title: resolution.displayName,
+                        isSelected: model.configuration.quality.resolution == resolution,
+                        unavailableReason: reason(for: resolution),
+                        isLocked: model.entitlements?.isUnlocked(resolution: resolution) == false
+                    ) {
+                        model.selectResolution(resolution)
+                    }
+                }
+            }
+
+            Section("Frame rate") {
+                ForEach(FrameRate.allCases) { rate in
+                    optionRow(
+                        title: rate.displayName,
+                        isSelected: model.configuration.quality.frameRate == rate,
+                        unavailableReason: reason(for: rate),
+                        isLocked: model.entitlements?.isUnlocked(frameRate: rate) == false
+                    ) {
+                        model.selectFrameRate(rate)
+                    }
+                }
+            }
+
+            Section("Codec") {
+                ForEach(VideoCodec.allCases) { codec in
+                    optionRow(
+                        title: codec.displayName,
+                        isSelected: model.configuration.quality.codec == codec,
+                        unavailableReason: nil,
+                        isLocked: false
+                    ) {
+                        model.selectCodec(codec)
+                    }
+                }
+            }
+
+            Section {
+                Toggle(isOn: Binding(
+                    get: { model.configuration.quality.savesCleanSources },
+                    set: { model.setSavesCleanSources($0) }
+                )) {
+                    HStack {
+                        Text("Save clean sources")
+                        if model.entitlements?.isUnlocked(.cleanSourceFiles) == false { ProBadge() }
+                    }
+                }
+            } footer: {
+                Text("Also writes each camera's untouched footage, so you can "
+                     + "re-edit the composition later.")
+            }
+        }
+    }
+
+    /// One row, three possible outcomes on tap.
+    ///
+    /// The order matters. A hardware block is checked *before* the Pro gate,
+    /// because selling a user 4K on a pairing that physically cannot produce it
+    /// would be the one dishonesty Doc 1 §1.1 rules out — so the device's answer
+    /// comes first, and the paywall only appears for something the purchase
+    /// would genuinely deliver.
     @ViewBuilder
     private func optionRow(
         title: String,
         isSelected: Bool,
         unavailableReason: String?,
-        isPro: Bool,
+        isLocked: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button {
             if let unavailableReason {
+                // The device's own refusal, which exists nowhere else: it is the
+                // only evidence of which quality tiers real hardware in the field
+                // actually declines.
+                Analytics.log(AnalyticsEvent.qualityOptionBlocked, [
+                    AnalyticsParam.name: title,
+                    AnalyticsParam.mode: model.configuration.mode.rawValue,
+                    AnalyticsParam.reason: unavailableReason,
+                ])
                 model.toasts.show(unavailableReason, isWarning: true)
                 HapticEngine.shared.error()
             } else {
+                // `action` goes through the view model's gated setters, which
+                // raise the paywall themselves when the tier is not owned.
                 action()
                 HapticEngine.shared.sliderDetent()
             }
@@ -332,7 +381,7 @@ struct QualitySheet: View {
                     HStack(spacing: 6) {
                         Text(title)
                             .foregroundStyle(unavailableReason == nil ? Color.primary : Color.secondary)
-                        if isPro, model.entitlements?.isPro == false { ProBadge() }
+                        if isLocked, unavailableReason == nil { ProBadge() }
                     }
                     if let unavailableReason {
                         Text(unavailableReason)
@@ -346,6 +395,10 @@ struct QualitySheet: View {
                         .foregroundStyle(DC.Color.accent)
                 }
             }
+            // `.buttonStyle(.plain)` hit-tests the label's content, and a
+            // `Spacer` is not content — without this the row only answered taps
+            // that landed on the words.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -393,6 +446,10 @@ struct SettingsPlaceholderSheet: View {
                         HStack {
                             Text("PiP parameter")
                                 .foregroundStyle(Color.primary)
+                            // The row opens for everyone — the sheet is where the
+                            // feature is demonstrated — so the badge is the only
+                            // warning a free user gets before a slider refuses.
+                            if model.isPiPParameterLocked { ProBadge() }
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.footnote.weight(.semibold))
@@ -423,14 +480,24 @@ struct SettingsPlaceholderSheet: View {
                     ))
                     Toggle("Mirror front camera", isOn: Binding(
                         get: { model.configuration.mirrorsFrontCamera },
-                        set: { model.configuration.mirrorsFrontCamera = $0 }
+                        set: { model.setMirrorsFrontCamera($0) }
                     ))
-                    Picker("Self-timer", selection: $model.selfTimer) {
+                    // Through the model's setters rather than straight at the
+                    // stored properties, so each one reports itself exactly once.
+                    // A `Picker` bound directly to `$model.selfTimer` has no
+                    // place to log from at all.
+                    Picker("Self-timer", selection: Binding(
+                        get: { model.selfTimer },
+                        set: { model.setSelfTimer($0) }
+                    )) {
                         ForEach(SelfTimer.allCases) { timer in
                             Text(timer.displayName).tag(timer)
                         }
                     }
-                    Toggle("Save to Photos", isOn: $model.savesToPhotoLibrary)
+                    Toggle("Save to Photos", isOn: Binding(
+                        get: { model.savesToPhotoLibrary },
+                        set: { model.setSavesToPhotoLibrary($0) }
+                    ))
                 }
 
                 // Moved out of the camera chrome, where it held a permanent slot
@@ -446,6 +513,10 @@ struct SettingsPlaceholderSheet: View {
                         }
                         .navigationTitle("Manual controls")
                         .navigationBarTitleDisplayMode(.inline)
+                        .analyticsScreen(
+                            AnalyticsScreen.manualControls,
+                            class: "ManualControls"
+                        )
                     }
                 }
 
@@ -468,53 +539,57 @@ struct SettingsPlaceholderSheet: View {
                     }
                 }
 
+                // The same rows the Quality pill opens, pushed rather than
+                // duplicated as pickers. Three `Picker`s used to live here and
+                // applied any combination the enum could express — no constraint
+                // matrix, no Pro badge — so this screen and the Quality sheet
+                // could be left disagreeing about the tier the app was recording
+                // at. There is one implementation now, and pushing it keeps this
+                // list to a single row per topic.
                 Section("Quality") {
-                    Picker("Resolution", selection: Binding(
-                        get: { model.configuration.quality.resolution },
-                        set: { model.selectResolution($0) }
-                    )) {
-                        ForEach(Resolution.allCases) { Text($0.displayName).tag($0) }
-                    }
-                    Picker("Frame rate", selection: Binding(
-                        get: { model.configuration.quality.frameRate },
-                        set: { model.selectFrameRate($0) }
-                    )) {
-                        ForEach(FrameRate.allCases) { Text($0.displayName).tag($0) }
-                    }
-                    Picker("Codec", selection: Binding(
-                        get: { model.configuration.quality.codec },
-                        set: { model.configuration.quality.codec = $0 }
-                    )) {
-                        ForEach(VideoCodec.allCases) { Text($0.displayName).tag($0) }
+                    NavigationLink {
+                        List { QualityOptionRows(model: model) }
+                            .navigationTitle("Quality")
+                            .navigationBarTitleDisplayMode(.inline)
+                            .task { model.probeQualityMatrix() }
+                            .analyticsScreen(
+                                AnalyticsScreen.qualityOptions,
+                                class: "QualityOptionRows"
+                            )
+                    } label: {
+                        LabeledContent("Quality", value: model.qualitySummary)
                     }
                 }
 
                 Section("Pro") {
                     if model.entitlements?.isPro == true {
-                        Label("DuoCam Pro is active", systemImage: "checkmark.seal.fill")
+                        Label("DuoRec Pro is active", systemImage: "checkmark.seal.fill")
                             .foregroundStyle(DC.Color.accent)
                     } else {
-                        Button("Unlock DuoCam Pro") {
-                            model.entitlements?.pendingFeature = nil
-                            model.entitlements?.isShowingPaywall = true
-                            dismiss()
+                        // Through the gate rather than by setting its flags: the
+                        // gate is what knows this sheet has to be handed back
+                        // before a second one can be presented over it.
+                        Button("Unlock DuoRec Pro") {
+                            model.entitlements?.present(
+                                nil,
+                                trigger: AnalyticsValue.triggerSettings
+                            )
                         }
                     }
                     Button("Restore Purchases") {
-                        Task { await subscriptions.restore() }
+                        Task { await subscriptions.restore(source: AnalyticsValue.sourceSettings) }
                     }
                 }
 
                 Section("About") {
-                    Button("Replay Introduction") {
-                        dismiss()
-                        router.replayOnboarding()
-                    }
                     LabeledContent("Version", value: Bundle.appVersion)
                 }
 
                 Section("Diagnostics") {
                     Button("Capability Inspector") {
+                        Analytics.log(AnalyticsEvent.capabilityInspectorOpened, [
+                            AnalyticsParam.source: AnalyticsValue.sourceSettings,
+                        ])
                         dismiss()
                         router.isShowingCapabilityInspector = true
                     }

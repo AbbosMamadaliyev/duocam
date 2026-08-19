@@ -31,6 +31,7 @@ struct GalleryView: View {
             .background(Color.black.ignoresSafeArea())
             .navigationTitle("Captures")
             .navigationBarTitleDisplayMode(.inline)
+            .analyticsScreen(AnalyticsScreen.gallery, class: "GalleryView")
             .toolbar { toolbar }
             .fullScreenCover(item: $selection) { record in
                 CaptureDetailView(record: record, namespace: zoom)
@@ -53,7 +54,7 @@ struct GalleryView: View {
                         if isSelecting {
                             toggle(record)
                         } else {
-                            selection = record
+                            open(record, from: AnalyticsValue.sourceGalleryGrid)
                         }
                     }
                     .contextMenu { contextMenu(for: record) }
@@ -83,6 +84,9 @@ struct GalleryView: View {
             // altogether. A mode you cannot back out of is a trap, not a mode.
             if isSelecting {
                 Button("Cancel") {
+                    Analytics.log(AnalyticsEvent.gallerySelectionCancelled, [
+                        AnalyticsParam.count: selectedIDs.count,
+                    ])
                     isSelecting = false
                     selectedIDs.removeAll()
                 }
@@ -99,24 +103,43 @@ struct GalleryView: View {
                 }
                 .disabled(selectedIDs.isEmpty)
             } else {
-                Button("Select") { isSelecting = true }
+                Button("Select") {
+                    Analytics.log(AnalyticsEvent.gallerySelectionStarted, [
+                        AnalyticsParam.count: captures.count,
+                    ])
+                    isSelecting = true
+                }
             }
         }
     }
 
     @ViewBuilder
     private func contextMenu(for record: CaptureRecord) -> some View {
+        // `ShareLink` presents the share sheet itself and takes no action
+        // closure, so the tap is observed *alongside* it. Simultaneous rather
+        // than `.onTapGesture`, which would consume the tap and trade a working
+        // Share button for an event.
         ShareLink(item: record.compositedURL) {
             Label("Share", systemImage: "square.and.arrow.up")
         }
+        .simultaneousGesture(TapGesture().onEnded {
+            Analytics.log(AnalyticsEvent.captureShareTapped, [
+                AnalyticsParam.source: AnalyticsValue.sourceGalleryContextMenu,
+                AnalyticsParam.mediaType: record.analyticsMediaType,
+            ])
+        })
         Button {
+            Analytics.log(AnalyticsEvent.savedToPhotoLibrary, [
+                AnalyticsParam.source: AnalyticsValue.sourceGalleryContextMenu,
+                AnalyticsParam.mediaType: record.analyticsMediaType,
+            ])
             Task { await PhotoLibraryExporter.saveToPhotos(record.compositedURL, isPhoto: record.isPhoto) }
         } label: {
             Label("Save to Photos", systemImage: "photo.badge.arrow.down")
         }
         if record.hasCleanSources {
             Button {
-                selection = record
+                open(record, from: AnalyticsValue.sourceGalleryContextMenu)
             } label: {
                 Label("Show clean sources", systemImage: "rectangle.on.rectangle")
             }
@@ -136,13 +159,41 @@ struct GalleryView: View {
         }
     }
 
+    /// Opening a capture, from either route into it.
+    ///
+    /// The context menu's "Show clean sources" lands on the same detail view as
+    /// a plain tap does, so both report here — otherwise the dual-source feature
+    /// would look unused simply because its entry point was untracked.
+    private func open(_ record: CaptureRecord, from source: String) {
+        Analytics.log(AnalyticsEvent.galleryCaptureOpened, [
+            AnalyticsParam.source: source,
+            AnalyticsParam.mediaType: record.analyticsMediaType,
+            AnalyticsParam.mode: record.mode.rawValue,
+            AnalyticsParam.layout: record.layout.rawValue,
+            AnalyticsParam.hasCleanSources: record.hasCleanSources,
+        ])
+        selection = record
+    }
+
     private func delete(_ record: CaptureRecord) {
+        Analytics.log(AnalyticsEvent.captureDeleted, [
+            AnalyticsParam.source: AnalyticsValue.sourceGalleryContextMenu,
+            AnalyticsParam.mediaType: record.analyticsMediaType,
+            AnalyticsParam.count: 1,
+        ])
         CaptureLibrary.deleteFiles(for: record)
         context.delete(record)
         try? context.save()
     }
 
     private func deleteSelected() {
+        // One event for the batch, not one per file: the user pressed Delete
+        // once, and a per-file count would make a single sweep of the gallery
+        // look like a burst of separate decisions.
+        Analytics.log(AnalyticsEvent.captureDeleted, [
+            AnalyticsParam.source: AnalyticsValue.sourceGalleryGrid,
+            AnalyticsParam.count: selectedIDs.count,
+        ])
         for record in captures where selectedIDs.contains(record.id) {
             CaptureLibrary.deleteFiles(for: record)
             context.delete(record)

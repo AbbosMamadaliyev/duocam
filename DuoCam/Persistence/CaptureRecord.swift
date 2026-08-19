@@ -69,6 +69,13 @@ final class CaptureRecord {
         let total = Int(duration.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
     }
+
+    /// `photo` or `video`, for analytics. Derived here rather than at each call
+    /// site so the gallery, the detail view and the exporter cannot disagree
+    /// about what to call the same file.
+    var analyticsMediaType: String {
+        isPhoto ? AnalyticsValue.mediaPhoto : AnalyticsValue.mediaVideo
+    }
 }
 
 /// Owns the SwiftData stack and the on-disk media beside it.

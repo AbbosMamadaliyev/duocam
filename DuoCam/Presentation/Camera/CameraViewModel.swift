@@ -21,9 +21,16 @@ final class CameraViewModel {
     var configuration: CaptureConfiguration {
         didSet {
             guard configuration != oldValue else { return }
+            // Suppressed only while the *engine's* answer is being written back
+            // — see `reconcileRequestedQuality`. Handing that straight back to
+            // `apply` would ask for a session rebuild to reach the state the
+            // session is already in.
+            guard !isReconcilingWithEngine else { return }
             Task { await engine.apply(configuration) }
         }
     }
+
+    @ObservationIgnored private var isReconcilingWithEngine = false
 
     // MARK: Recording state
 
@@ -96,7 +103,7 @@ final class CameraViewModel {
     /// The media library. Optional because a failed SwiftData stack must not
     /// prevent the camera from running — Doc 3's rule is that failures degrade.
     /// Doc 3 Phase 7 task 3: the *only* thing that decides whether a Pro
-    /// feature may be used. Views ask this, never StoreKit.
+    /// feature may be used. Views ask this, never the store.
     var entitlements: EntitlementGate?
 
     private(set) var library: CaptureLibrary?
@@ -129,6 +136,10 @@ final class CameraViewModel {
 
     /// Doc 2 §8: double-tapping the preview toggles chrome entirely.
     var isChromeHidden = false
+
+    /// In-flight debounced analytics writes, keyed by control. See
+    /// `analyticsSettled`.
+    @ObservationIgnored var pendingSettledLogs: [String: Task<Void, Never>] = [:]
 
     // MARK: Phase F state
 
@@ -275,11 +286,13 @@ final class CameraViewModel {
             configuration.layout = layout
             conformOverlayToLayout()
         }
+        // Through the ungated primitives: a debug launch override must not be
+        // refused by the Pro gate, and must not raise the paywall on launch.
         if let width = DebugFlags.forcedOverlayWidth {
-            setOverlayWidth(width)
+            applyOverlayWidth(width)
         }
         if let height = DebugFlags.forcedOverlayHeight {
-            setOverlayHeight(height)
+            applyOverlayHeight(height)
         }
         if DebugFlags.startsSwapped {
             swapStreams()
@@ -313,6 +326,55 @@ final class CameraViewModel {
         if DebugFlags.swapTest {
             runSwapTest()
         }
+        if DebugFlags.dumpsCaptureGate {
+            dumpCaptureGate()
+        }
+    }
+
+    /// Runs the free-tier shutter gate over a series of presses and reports what
+    /// it decided, capturing nothing.
+    ///
+    /// What to read in the output: `Single` must be all `pass`. `Rear + Rear`
+    /// must be all `PAYWALL`. `Front + Back` must refuse the third press of each
+    /// row and no other — and the photo row must not be shortened by the video
+    /// row above it, which is the whole reason the two counters are separate.
+    ///
+    /// The ledger is left as it was found. A diagnostic that spends the user's
+    /// free captures is a diagnostic that changes the thing it measures.
+    private func dumpCaptureGate() {
+        guard let entitlements else { return }
+
+        let restore = entitlements.freeTier.captureAttempts
+
+        var lines = [
+            "═══ DuoCam capture gate ═══",
+            "entitlement: \(entitlements.isPro ? "Pro" : "Free")",
+        ]
+
+        for mode in CaptureMode.allCases {
+            lines.append("── \(mode.displayName) ──")
+            for kind in CaptureKind.allCases {
+                entitlements.freeTier.setCaptureAttempts([:])
+                let outcomes = (1...9).map { _ in
+                    entitlements.requireCapture(kind, mode: mode) ? "pass" : "PAYWALL"
+                }
+                lines.append("   \(kind.displayName.padding(toLength: 5, withPad: " ", startingAt: 0)) "
+                             + outcomes.joined(separator: " · "))
+            }
+        }
+
+        lines.append("launch reminder: every \(FreeTierLedger.launchesPerPaywall) launches, "
+                     + "count now \(entitlements.freeTier.launches)")
+        lines.append("═══════════════════════════")
+
+        entitlements.freeTier.setCaptureAttempts(restore)
+        // The gate raised the paywall as it went, which is the correct answer to
+        // a refused press and the wrong thing to leave on screen after a print.
+        entitlements.isShowingPaywall = false
+        entitlements.pendingFeature = nil
+
+        print(lines.joined(separator: "\n"))
+        fflush(stdout)
     }
 
     /// Taps Swap twice on a running session and reports what the graph did.
@@ -493,19 +555,35 @@ final class CameraViewModel {
                 status = newStatus
                 if case .interrupted(let reason) = newStatus {
                     toasts.show(reason, systemImage: "pause.circle", isWarning: true)
+                    analyticsEvent(AnalyticsEvent.captureSessionInterrupted, [
+                        AnalyticsParam.reason: reason,
+                        AnalyticsParam.duringRecording: isRecording,
+                    ])
                 }
                 if case .failed(let message) = newStatus {
                     toasts.show(message, systemImage: "exclamationmark.triangle.fill", isWarning: true)
+                    analyticsEvent(AnalyticsEvent.captureSessionFailed, [
+                        AnalyticsParam.reason: message,
+                        AnalyticsParam.duringRecording: isRecording,
+                    ])
                 }
 
             case .qualityNegotiated(let quality):
                 negotiatedQuality = quality
+                reconcileRequestedQuality(with: quality)
 
             case .degraded(let reason):
                 // Doc 2 §13: the ladder runs silently; only the final result is
                 // surfaced, via the pill and exactly one toast.
                 toasts.show(reason.userFacingMessage, systemImage: "arrow.down.circle", isWarning: true)
                 HapticEngine.shared.warning()
+                // What the device *actually* gave, per model. This is the
+                // evidence behind whether 4K/60 is worth offering at all on a
+                // given class of hardware, and it exists nowhere else.
+                analyticsEvent(AnalyticsEvent.qualityDegraded, [
+                    AnalyticsParam.reason: String(describing: reason),
+                    AnalyticsParam.duringRecording: isRecording,
+                ])
 
             case .thermalStateChanged(let state):
                 handleThermalState(state)
@@ -513,11 +591,25 @@ final class CameraViewModel {
             case .recoverableFailure(let message):
                 toasts.show(message, systemImage: "exclamationmark.triangle.fill", isWarning: true)
                 HapticEngine.shared.error()
+                analyticsEvent(AnalyticsEvent.captureRecoverableFailure, [
+                    AnalyticsParam.reason: message,
+                    AnalyticsParam.duringRecording: isRecording,
+                ])
             }
         }
     }
 
     private func handleThermalState(_ state: ProcessInfo.ThermalState) {
+        // Every transition, not only the two that act. `.fair` arriving mid-take
+        // is the early warning that `.serious` is coming, and the distribution
+        // across device models is what says whether the quality ceiling is set
+        // too high for the hardware.
+        analyticsEvent(AnalyticsEvent.thermalStateChanged, [
+            AnalyticsParam.thermalState: Self.thermalName(state),
+            AnalyticsParam.duringRecording: isRecording,
+            AnalyticsParam.durationSeconds: elapsed,
+        ])
+
         switch state {
         case .serious:
             toasts.show("Reducing quality to keep recording", systemImage: "thermometer.high", isWarning: true)
@@ -528,6 +620,52 @@ final class CameraViewModel {
         default:
             break
         }
+    }
+
+    /// `ProcessInfo.ThermalState` has no `String` form, and
+    /// `String(describing:)` gives an integer for an `@objc` enum — which is the
+    /// kind of value that turns a dashboard row into a puzzle.
+    private static func thermalName(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: "nominal"
+        case .fair: "fair"
+        case .serious: "serious"
+        case .critical: "critical"
+        @unknown default: "unknown"
+        }
+    }
+
+    /// Folds the engine's answer back into the request, so every surface that
+    /// shows quality shows the same numbers.
+    ///
+    /// There used to be two truths on screen at once. The quality pill reads
+    /// `negotiatedQuality` — what the hardware granted — while the Quality sheet
+    /// and Settings both read `configuration.quality`, what was asked for. On any
+    /// pairing that cannot deliver the request, the pill said 1080p while both
+    /// lists kept a tick beside 4K: change it in one place, and the other two
+    /// disagreed. Neither reading was wrong on its own, which is exactly why the
+    /// mismatch was impossible to interpret.
+    ///
+    /// Thermal and system pressure are excluded. Those are *transient* — the
+    /// governor puts the quality back when the device cools — and writing them
+    /// into the request would make a warm pocket permanently lower the ceiling
+    /// the user chose.
+    private func reconcileRequestedQuality(with quality: NegotiatedQuality) {
+        switch quality.degradationReason {
+        case .thermalPressure, .systemPressure:
+            return
+        case nil, .hardwareCostExceeded, .formatUnavailable:
+            break
+        }
+
+        guard configuration.quality.resolution != quality.resolution
+                || configuration.quality.frameRate != quality.frameRate
+        else { return }
+
+        isReconcilingWithEngine = true
+        configuration.quality.resolution = quality.resolution
+        configuration.quality.frameRate = quality.frameRate
+        isReconcilingWithEngine = false
     }
 
     // MARK: Derived presentation state
@@ -542,6 +680,15 @@ final class CameraViewModel {
         guard status.isRunning || isRecording else { return .disabled }
         if isRecording { return isPaused ? .videoPaused : .videoRecording }
         return .videoIdle
+    }
+
+    /// `1080p · 30 fps`, for the one place quality is summarised rather than
+    /// chosen — the Settings row that pushes the option list.
+    ///
+    /// Reads `negotiatedQuality`, the same value the quality pill shows, so the
+    /// two cannot say different things about the same session.
+    var qualitySummary: String {
+        "\(negotiatedQuality.resolution.displayName) · \(negotiatedQuality.frameRate.displayName) fps"
     }
 
     /// The white button is live whenever the session is: during a take it
@@ -594,18 +741,42 @@ final class CameraViewModel {
 
     func select(mode: CaptureMode) {
         guard mode != configuration.mode else { return }
+        let previous = configuration.mode
         configuration.apply(mode: mode)
         extinguishTorchIfUnavailable()
         HapticEngine.shared.modeChanged()
+
+        Analytics.log(AnalyticsEvent.captureModeChanged, [
+            AnalyticsParam.mode: mode.rawValue,
+            AnalyticsParam.previousMode: previous.rawValue,
+        ])
+        // A user property as well as an event: which mode people *live* in is a
+        // segment for every other number, and an event alone can only answer it
+        // by replaying each session's history.
+        Analytics.setUserProperty(mode.rawValue, for: AnalyticsUserProperty.preferredMode)
     }
 
+    /// Every layout, free.
+    ///
+    /// Split and diagonal used to be gated, and the card wore a lock to say so.
+    /// The gate has moved to the shutter: in both dual modes the *capture* is
+    /// what is paid for now, so charging for the arrangement as well refused the
+    /// same user twice for one recording — once for choosing how to frame it and
+    /// again for pressing record. Arranging the two streams is also the one thing
+    /// the preview exists to demonstrate, and a lock on it hides the product.
     func select(layout: LayoutType) {
         guard layout != configuration.layout else { return }
-        // Doc 1 §4.5 gates split and diagonal behind Pro.
-        if layout.isSplit, entitlements?.require(.splitLayouts) == false { return }
+        let previous = configuration.layout
         configuration.layout = layout
         conformOverlayToLayout()
         HapticEngine.shared.layoutSelected()
+
+        Analytics.log(AnalyticsEvent.layoutSelected, [
+            AnalyticsParam.layout: layout.rawValue,
+            AnalyticsParam.previousLayout: previous.rawValue,
+            AnalyticsParam.mode: configuration.mode.rawValue,
+        ])
+        Analytics.setUserProperty(layout.rawValue, for: AnalyticsUserProperty.preferredLayout)
     }
 
     /// Installs the size the chosen layout stands for.
@@ -631,32 +802,65 @@ final class CameraViewModel {
     ///
     /// Routed here rather than mutating `configuration.quality` from the sheet
     /// so 4K and 60 fps cannot be reached by a code path that forgot to check.
+    /// The three quality setters log *after* the gate, not before.
+    ///
+    /// A refusal already has its own event — the gate raises
+    /// `feature_gate_blocked` on the way to the paywall — so logging the
+    /// selection here as well would count one refused tap as both a block and a
+    /// change, and 4K adoption would read as high among users who never got it.
     func selectResolution(_ resolution: Resolution) {
         if resolution == .uhd4K, entitlements?.require(.resolution4K) == false { return }
         configuration.quality.resolution = resolution
+        Analytics.log(AnalyticsEvent.resolutionSelected, [
+            AnalyticsParam.resolution: resolution.rawValue,
+            AnalyticsParam.mode: configuration.mode.rawValue,
+        ])
     }
 
     func selectFrameRate(_ frameRate: FrameRate) {
         if frameRate == .fps60, entitlements?.require(.frameRate60) == false { return }
         configuration.quality.frameRate = frameRate
+        Analytics.log(AnalyticsEvent.frameRateSelected, [
+            AnalyticsParam.frameRate: frameRate.rawValue,
+            AnalyticsParam.mode: configuration.mode.rawValue,
+        ])
+    }
+
+    func selectCodec(_ codec: VideoCodec) {
+        guard codec != configuration.quality.codec else { return }
+        configuration.quality.codec = codec
+        Analytics.log(AnalyticsEvent.codecSelected, [AnalyticsParam.codec: codec.rawValue])
     }
 
     func setSavesCleanSources(_ enabled: Bool) {
         if enabled, entitlements?.require(.cleanSourceFiles) == false { return }
         configuration.quality.savesCleanSources = enabled
+        Analytics.log(AnalyticsEvent.cleanSourcesToggled, [AnalyticsParam.enabled: enabled])
     }
 
     /// Doc 2 §5.6: a pure presentation change. Both streams stay live, so this
     /// deliberately does *not* go through a session reconfiguration — and it
     /// works identically during recording.
-    func swapStreams() {
+    func swapStreams(source: String = AnalyticsValue.sourceCameraChrome) {
         guard hasSecondaryStream else {
             HapticEngine.shared.error()
+            // A control that is on screen and refuses is worth counting: in
+            // Single mode the swap button is disabled, so every one of these is
+            // a dual session whose second stream never came up.
+            Analytics.log(AnalyticsEvent.streamsSwapBlocked, [
+                AnalyticsParam.source: source,
+                AnalyticsParam.mode: configuration.mode.rawValue,
+            ])
             return
         }
         configuration.swapStreams()
         extinguishTorchIfUnavailable()
         HapticEngine.shared.streamsSwapped()
+
+        analyticsEvent(AnalyticsEvent.streamsSwapped, [
+            AnalyticsParam.source: source,
+            AnalyticsParam.duringRecording: isRecording,
+        ])
     }
 
     /// Puts the torch out when the lens that owned it stops being primary.
@@ -676,6 +880,10 @@ final class CameraViewModel {
     func toggleFlash() {
         configuration.flashMode = configuration.flashMode.next
         HapticEngine.shared.sliderDetent()
+        Analytics.log(AnalyticsEvent.flashModeToggled, [
+            AnalyticsParam.flashMode: configuration.flashMode.rawValue,
+            AnalyticsParam.primarySource: configuration.primarySource.rawValue,
+        ])
     }
 
     /// Whether the torch can be lit for the stream that is currently primary.
@@ -687,8 +895,12 @@ final class CameraViewModel {
     /// front-primary session — there is no LED the front camera can see — and
     /// a control that lights up while doing nothing is worse than one that
     /// explains why it can't.
-    func toggleTorch() {
+    func toggleTorch(source: String = AnalyticsValue.sourceCameraChrome) {
         guard isTorchAvailable else {
+            Analytics.log(AnalyticsEvent.torchUnavailable, [
+                AnalyticsParam.source: source,
+                AnalyticsParam.primarySource: configuration.primarySource.rawValue,
+            ])
             toasts.show(
                 configuration.primarySource.hasTorch
                     ? "The torch isn't available right now"
@@ -701,6 +913,11 @@ final class CameraViewModel {
         }
         setTorch(enabled: !configuration.isTorchOn)
         HapticEngine.shared.sliderDetent()
+        Analytics.log(AnalyticsEvent.torchToggled, [
+            AnalyticsParam.source: source,
+            AnalyticsParam.enabled: configuration.isTorchOn,
+            AnalyticsParam.duringRecording: isRecording,
+        ])
     }
 
     /// Cycles the frame shape, 16:9 ↔ 4:3.
@@ -710,6 +927,10 @@ final class CameraViewModel {
     /// and changes nothing is worse than one that says why it can't.
     func toggleAspectRatio() {
         guard !isRecording else {
+            Analytics.log(AnalyticsEvent.aspectRatioBlocked, [
+                AnalyticsParam.reason: "recording_in_progress",
+                AnalyticsParam.aspectRatio: configuration.aspectRatio.rawValue,
+            ])
             toasts.show(
                 "The frame shape can't change while recording",
                 systemImage: "aspectratio",
@@ -728,11 +949,21 @@ final class CameraViewModel {
         overlayHeightFraction = (overlayHeightFraction * pictureAspect / outgoing)
             .clamped(to: OverlayMetrics.heightRange)
         HapticEngine.shared.modeChanged()
+
+        Analytics.log(AnalyticsEvent.aspectRatioToggled, [
+            AnalyticsParam.aspectRatio: configuration.aspectRatio.rawValue,
+            AnalyticsParam.layout: configuration.layout.rawValue,
+        ])
     }
 
     func setPhotoVideoMode(_ mode: PhotoVideoMode) {
         guard !isRecording, mode != configuration.photoVideoMode else { return }
+        let previous = configuration.photoVideoMode
         configuration.photoVideoMode = mode
+        Analytics.log(AnalyticsEvent.photoVideoModeChanged, [
+            AnalyticsParam.subMode: mode.rawValue,
+            AnalyticsParam.previousMode: previous.rawValue,
+        ])
         // Photo mode's top control is Flash, which means the torch loses its
         // switch on the way in. Leaving the LED burning behind a control that
         // is no longer on screen is the same stranding as swapping to the front
@@ -755,18 +986,36 @@ final class CameraViewModel {
     /// The red button. Starts or stops a take, and leaves the app in Video mode
     /// so the chrome that depends on it — the torch, the transient label —
     /// agrees with what just happened.
+    ///
+    /// Only *starting* passes the gate. Stopping is checked first and never
+    /// gated: a paywall that can appear between record and stop is a paywall
+    /// that can strand a user inside their own recording.
     func triggerRecord() {
+        if isRecording {
+            setPhotoVideoMode(.video)
+            stopRecording()
+            return
+        }
+
+        guard entitlements?.requireCapture(.video, mode: configuration.mode) != false else { return }
+
         setPhotoVideoMode(.video)
-        isRecording ? stopRecording() : startRecording()
+        startRecording()
     }
 
     /// The white button. Takes a still, and during a take takes it *without*
     /// interrupting the recording.
+    ///
+    /// The still-during-video path is gated too, and counted as a photo. It
+    /// writes its own file to its own library entry, so leaving it open would
+    /// have made "start a take, then press the white button" the free way past
+    /// the photo allowance.
     func triggerPhoto() {
         guard isPhotoButtonEnabled else {
             HapticEngine.shared.error()
             return
         }
+        guard entitlements?.requireCapture(.photo, mode: configuration.mode) != false else { return }
         guard !isRecording else {
             captureStillDuringVideo()
             return
@@ -805,12 +1054,25 @@ final class CameraViewModel {
             )
             toasts.show("Photo saved", systemImage: "checkmark.circle.fill")
 
+            analyticsEvent(AnalyticsEvent.photoCaptured, [
+                AnalyticsParam.duringRecording: isRecording,
+                AnalyticsParam.selfTimer: selfTimer.rawValue,
+                AnalyticsParam.flashMode: configuration.flashMode.rawValue,
+                // The front camera's only light source. Whether the screen flash
+                // is ever actually used is the question behind having built it.
+                AnalyticsParam.value: usesScreenFlash ? "screen_flash" : "none",
+            ])
+
             if let url = lastCapture?.compositedURL {
                 await copyToPhotoLibrary(url, isPhoto: true)
             }
         } catch {
             toasts.show(error.localizedDescription, systemImage: "exclamationmark.triangle.fill", isWarning: true)
             HapticEngine.shared.error()
+            analyticsEvent(AnalyticsEvent.photoCaptureFailed, [
+                AnalyticsParam.reason: error.localizedDescription,
+                AnalyticsParam.duringRecording: isRecording,
+            ])
         }
     }
 
@@ -824,8 +1086,47 @@ final class CameraViewModel {
 
     // MARK: Phase F — manual controls and lenses
 
+    /// Manual exposure, ISO, shutter, white balance and focus.
+    ///
+    /// Debounced, because every one of these arrives from a slider that writes
+    /// on each frame of a drag. What matters is which controls people reach for
+    /// and whether they leave automatic — not the path a thumb took to get
+    /// there.
     func applyManualControl(_ control: ManualControl, to role: StreamRole) {
         engine.setManualControl(control, for: role)
+
+        let (name, value, isAuto) = Self.describe(control)
+        guard name != "reset_all" else {
+            Analytics.log(AnalyticsEvent.manualControlsReset, [
+                AnalyticsParam.streamRole: role.rawValue,
+            ])
+            return
+        }
+        analyticsSettled(
+            AnalyticsEvent.manualControlChanged,
+            key: "manual.\(role.rawValue).\(name)",
+            [
+                AnalyticsParam.control: name,
+                AnalyticsParam.streamRole: role.rawValue,
+                AnalyticsParam.value: value,
+                AnalyticsParam.enabled: !isAuto,
+            ]
+        )
+    }
+
+    /// `(control name, value, is automatic)`. `nil` in every associated value
+    /// means "restore automatic", which is the one thing about these controls
+    /// worth counting on its own — a manual control returned to auto is a manual
+    /// control that did not work for the user.
+    private static func describe(_ control: ManualControl) -> (String, Double, Bool) {
+        switch control {
+        case .exposureBias(let value): ("exposure_bias", Double(value), false)
+        case .iso(let value): ("iso", Double(value ?? 0), value == nil)
+        case .shutterSpeed(let value): ("shutter_speed", value ?? 0, value == nil)
+        case .whiteBalance(let value): ("white_balance", Double(value ?? 0), value == nil)
+        case .focus(let value): ("focus", Double(value ?? 0), value == nil)
+        case .resetAll: ("reset_all", 0, true)
+        }
     }
 
     func setTorch(enabled: Bool, level: Float = 1) {
@@ -839,17 +1140,46 @@ final class CameraViewModel {
         case .secondary: configuration.secondarySource = source
         }
         extinguishTorchIfUnavailable()
+        Analytics.log(AnalyticsEvent.lensSourceChanged, [
+            AnalyticsParam.streamRole: role.rawValue,
+            AnalyticsParam.value: source.rawValue,
+            AnalyticsParam.source: AnalyticsValue.sourceSettings,
+        ])
     }
 
     func toggleGrid() {
         configuration.showsGrid.toggle()
         HapticEngine.shared.sliderDetent()
+        Analytics.log(AnalyticsEvent.gridToggled, [
+            AnalyticsParam.enabled: configuration.showsGrid,
+        ])
     }
 
     func toggleLevel() {
         configuration.showsLevel.toggle()
         if configuration.showsLevel { level.start() } else { level.stop() }
         HapticEngine.shared.sliderDetent()
+        Analytics.log(AnalyticsEvent.levelToggled, [
+            AnalyticsParam.enabled: configuration.showsLevel,
+        ])
+    }
+
+    func setMirrorsFrontCamera(_ enabled: Bool) {
+        guard enabled != configuration.mirrorsFrontCamera else { return }
+        configuration.mirrorsFrontCamera = enabled
+        Analytics.log(AnalyticsEvent.mirrorFrontToggled, [AnalyticsParam.enabled: enabled])
+    }
+
+    func setSelfTimer(_ timer: SelfTimer) {
+        guard timer != selfTimer else { return }
+        selfTimer = timer
+        Analytics.log(AnalyticsEvent.selfTimerChanged, [AnalyticsParam.selfTimer: timer.rawValue])
+    }
+
+    func setSavesToPhotoLibrary(_ enabled: Bool) {
+        guard enabled != savesToPhotoLibrary else { return }
+        savesToPhotoLibrary = enabled
+        Analytics.log(AnalyticsEvent.saveToPhotosToggled, [AnalyticsParam.enabled: enabled])
     }
 
     func startRecording() {
@@ -867,6 +1197,9 @@ final class CameraViewModel {
                     isWarning: true
                 )
                 HapticEngine.shared.error()
+                analyticsEvent(AnalyticsEvent.recordingStartFailed, [
+                    AnalyticsParam.reason: error.localizedDescription,
+                ])
                 return
             }
 
@@ -875,6 +1208,17 @@ final class CameraViewModel {
             elapsed = 0
             HapticEngine.shared.recordingStarted()
             startElapsedTimer()
+
+            // Logged where the writer actually came up, not where the button was
+            // pressed. A `startRecording` that throws never reaches here, and a
+            // "started" count that included failed starts would make the
+            // start-to-save ratio unreadable — which is the one ratio that says
+            // whether the pipeline is working for real users.
+            analyticsEvent(AnalyticsEvent.recordingStarted, [
+                AnalyticsParam.isPro: entitlements?.isPro ?? false,
+                AnalyticsParam.hasCleanSources: configuration.quality.savesCleanSources,
+                AnalyticsParam.codec: configuration.quality.codec.rawValue,
+            ])
         }
     }
 
@@ -900,9 +1244,21 @@ final class CameraViewModel {
         isPaused = false
         HapticEngine.shared.recordingStopped()
 
+        // The take's length, captured before the writer is asked to finalize:
+        // this is the number the take was *intended* to be, and it is the only
+        // one available if finalization then fails.
+        let takeLength = elapsed
+        analyticsEvent(AnalyticsEvent.recordingStopped, [
+            AnalyticsParam.durationSeconds: takeLength,
+        ])
+
         Task {
             guard let result = await engine.stopRecording() else {
                 toasts.show("Recording could not be saved", systemImage: "exclamationmark.triangle.fill", isWarning: true)
+                analyticsEvent(AnalyticsEvent.recordingSaveFailed, [
+                    AnalyticsParam.durationSeconds: takeLength,
+                    AnalyticsParam.reason: "writer_returned_no_result",
+                ])
                 return
             }
 
@@ -914,6 +1270,19 @@ final class CameraViewModel {
             )
 
             toasts.show("Recording saved", systemImage: "checkmark.circle.fill")
+
+            // Separate from `recording_stopped` on purpose. Stopping is a user
+            // action; saving is the pipeline's answer to it, and the gap between
+            // the two counts is the failure rate of everything downstream of the
+            // shutter. The drop rate rides along because Doc 3 budgets it at
+            // 0.1% — a budget nobody can hold the app to without the field
+            // number.
+            analyticsEvent(AnalyticsEvent.recordingSaved, [
+                AnalyticsParam.durationSeconds: result.duration,
+                AnalyticsParam.dropPercent: result.dropFraction * 100,
+                AnalyticsParam.framesAppended: result.framesAppended,
+                AnalyticsParam.hasCleanSources: !result.cleanSourceFileNames.isEmpty,
+            ])
 
             // After the toast, not before: copying a 4K take into Photos takes
             // long enough that gating the confirmation on it would read as the
@@ -935,7 +1304,21 @@ final class CameraViewModel {
     private func copyToPhotoLibrary(_ url: URL, isPhoto: Bool) async {
         guard savesToPhotoLibrary else { return }
         let saved = await PhotoLibraryExporter.saveToPhotos(url, isPhoto: isPhoto)
-        guard !saved else { return }
+        let mediaType = isPhoto ? AnalyticsValue.mediaPhoto : AnalyticsValue.mediaVideo
+        guard !saved else {
+            Analytics.log(AnalyticsEvent.savedToPhotoLibrary, [
+                AnalyticsParam.mediaType: mediaType,
+                AnalyticsParam.source: AnalyticsValue.sourceCameraChrome,
+            ])
+            return
+        }
+        // Almost always a photo-library permission the user declined, which is
+        // silent everywhere else in the app — the capture still succeeded, so
+        // nothing else marks it.
+        Analytics.log(AnalyticsEvent.photoLibrarySaveFailed, [
+            AnalyticsParam.mediaType: mediaType,
+            AnalyticsParam.source: AnalyticsValue.sourceCameraChrome,
+        ])
         toasts.show(
             "Couldn't save to Photos — check photo access in Settings",
             systemImage: "exclamationmark.triangle.fill",
@@ -948,12 +1331,19 @@ final class CameraViewModel {
         isPaused.toggle()
         if isPaused { engine.pauseRecording() } else { engine.resumeRecording() }
         HapticEngine.shared.recordingPauseToggled()
+        Analytics.log(AnalyticsEvent.recordingPauseToggled, [
+            AnalyticsParam.enabled: isPaused,
+            AnalyticsParam.durationSeconds: elapsed,
+        ])
     }
 
     /// Doc 2 §7.2: a full-resolution still without interrupting the recording.
     func captureStillDuringVideo() {
         HapticEngine.shared.stillDuringVideo()
         flashCapture()
+        analyticsEvent(AnalyticsEvent.stillDuringVideoCaptured, [
+            AnalyticsParam.durationSeconds: elapsed,
+        ])
         Task { await runCapture() }
     }
 
@@ -988,6 +1378,12 @@ final class CameraViewModel {
         engine.focusAndExpose(at: normalized, in: role)
         focusIndicator = FocusIndicator(point: point, role: role, isLocked: false)
         scheduleFocusIndicatorDismissal()
+        // Debounced: a tap-to-focus is one event, but people tap repeatedly
+        // while a scene settles, and three taps in a second is one intention.
+        analyticsSettled(AnalyticsEvent.focusTapped, key: "focus.\(role.rawValue)", [
+            AnalyticsParam.streamRole: role.rawValue,
+            AnalyticsParam.duringRecording: isRecording,
+        ])
     }
 
     func lockFocus(at point: CGPoint, normalized: CGPoint, in role: StreamRole) {
@@ -995,6 +1391,10 @@ final class CameraViewModel {
         focusIndicator = FocusIndicator(point: point, role: role, isLocked: true)
         HapticEngine.shared.focusLocked()
         scheduleFocusIndicatorDismissal()
+        Analytics.log(AnalyticsEvent.focusLocked, [
+            AnalyticsParam.streamRole: role.rawValue,
+            AnalyticsParam.duringRecording: isRecording,
+        ])
     }
 
     func setExposureBias(_ bias: Float) {
@@ -1047,6 +1447,14 @@ final class CameraViewModel {
         configuration = updated
         extinguishTorchIfUnavailable()
         HapticEngine.shared.sliderDetent()
+
+        Analytics.log(AnalyticsEvent.zoomStopSelected, [
+            AnalyticsParam.zoomLabel: stop.label,
+            AnalyticsParam.zoomFactor: stop.zoomFactor,
+            AnalyticsParam.primarySource: updated.primarySource.rawValue,
+            AnalyticsParam.mode: updated.mode.rawValue,
+            AnalyticsParam.duringRecording: isRecording,
+        ])
     }
 
     // MARK: Actions — overlay
@@ -1055,6 +1463,15 @@ final class CameraViewModel {
     func placeOverlay(atUnit unit: CGPoint) {
         overlayCentreUnit = unit
         HapticEngine.shared.overlayPlaced()
+        // At the *end* of the drag, which is the one moment the position means
+        // anything. `trackOverlayDrag` deliberately logs nothing — it runs at the
+        // display's refresh rate.
+        Analytics.log(AnalyticsEvent.overlayRepositioned, [
+            AnalyticsParam.overlayX: unit.x,
+            AnalyticsParam.overlayY: unit.y,
+            AnalyticsParam.layout: configuration.layout.rawValue,
+            AnalyticsParam.duringRecording: isRecording,
+        ])
     }
 
     /// Keeps the *recorded* composition following the finger during a drag.
@@ -1082,10 +1499,50 @@ final class CameraViewModel {
     /// Settings sheet is exactly what is covering it.
     func presentPiPParameterSheet() {
         activeSheet = nil
+        Analytics.log(AnalyticsEvent.sheetOpened, [
+            AnalyticsParam.name: CameraSheet.pipParameters.rawValue,
+            AnalyticsParam.source: AnalyticsValue.sourceSettings,
+            AnalyticsParam.locked: isPiPParameterLocked,
+        ])
         Task {
             try? await Task.sleep(for: .milliseconds(350))
             activeSheet = .pipParameters
         }
+    }
+
+    /// The one way a sheet is opened, so every open carries where it came from.
+    ///
+    /// The Quality sheet is reachable from the pill and from Settings, and the
+    /// two are completely different moments — one is mid-setup, the other is a
+    /// user who went looking. Assigning `activeSheet` directly at the call sites
+    /// lost that distinction, and lost the open entirely for any sheet whose
+    /// screen view happened not to fire.
+    func presentSheet(_ sheet: CameraSheet, from source: String) {
+        Analytics.log(AnalyticsEvent.sheetOpened, [
+            AnalyticsParam.name: sheet.rawValue,
+            AnalyticsParam.source: source,
+            AnalyticsParam.mode: configuration.mode.rawValue,
+        ])
+        activeSheet = sheet
+    }
+
+    /// Doc 2 §7.4: the library, opened from the bottom cluster.
+    func openGallery() {
+        Analytics.log(AnalyticsEvent.galleryOpened, [
+            AnalyticsParam.source: AnalyticsValue.sourceCameraChrome,
+        ])
+        isShowingGallery = true
+    }
+
+    /// Double-tap on the preview (Doc 2 §8). Counted because it is the app's one
+    /// completely invisible gesture — nothing on screen advertises it, so how
+    /// often it is found at all is the question.
+    func toggleChromeHidden() {
+        isChromeHidden.toggle()
+        Analytics.log(AnalyticsEvent.chromeVisibilityToggled, [
+            AnalyticsParam.enabled: !isChromeHidden,
+            AnalyticsParam.duringRecording: isRecording,
+        ])
     }
 
     /// Restores every PiP parameter: the shipped border — 20pt corners, a 3pt
@@ -1094,6 +1551,9 @@ final class CameraViewModel {
         overlayBorder = .default
         conformOverlayToLayout()
         HapticEngine.shared.success()
+        Analytics.log(AnalyticsEvent.pipParametersReset, [
+            AnalyticsParam.layout: configuration.layout.rawValue,
+        ])
     }
 
     /// Whether anything on the parameter sheet has been moved off its default,
@@ -1113,15 +1573,107 @@ final class CameraViewModel {
             || abs(overlayHeightFraction - size.height) > 0.001
     }
 
-    // MARK: Actions — overlay size
+    // MARK: Actions — PiP parameters (Pro)
 
+    /// The gate every PiP parameter goes through.
+    ///
+    /// The *sheet* is deliberately not gated — a control panel a free user
+    /// cannot open is a feature they never find out exists — so the refusal
+    /// happens at the moment of change instead. Every writer below funnels
+    /// through here, including the pinch on the overlay itself: leaving that one
+    /// open would be a free route to the same result, which makes the gate on
+    /// the sliders pointless rather than lenient.
+    private var allowsPiPParameterChange: Bool {
+        entitlements?.require(.pipParameters) != false
+    }
+
+    /// Whether the parameter controls should read as locked. A question about
+    /// *appearance*, so unlike `allowsPiPParameterChange` it raises nothing.
+    var isPiPParameterLocked: Bool {
+        entitlements.map { !$0.isPro } ?? false
+    }
+
+    /// Every setter below is debounced through `analyticsSettled`.
+    ///
+    /// These are all slider bindings, written on every frame of a drag — the one
+    /// place in the app where naïve logging would genuinely matter, since a
+    /// single sweep of the width slider is over a hundred writes. What the
+    /// dashboard needs is the value the user stopped on.
     func setOverlayWidth(_ fraction: CGFloat) {
+        guard allowsPiPParameterChange else { return }
+        applyOverlayWidth(fraction)
+        logPiPParameter(AnalyticsValue.pipWidth, overlayWidthFraction)
+    }
+
+    func setOverlayHeight(_ fraction: CGFloat) {
+        guard allowsPiPParameterChange else { return }
+        applyOverlayHeight(fraction)
+        logPiPParameter(AnalyticsValue.pipHeight, overlayHeightFraction)
+    }
+
+    func setOverlayCornerRadius(_ radius: CGFloat) {
+        guard allowsPiPParameterChange else { return }
+        overlayBorder.cornerRadius = radius.clamped(to: 0...OverlayBorderStyle.maximumCornerRadius)
+        logPiPParameter(AnalyticsValue.pipCornerRadius, overlayBorder.cornerRadius)
+    }
+
+    func setOverlayBorderWidth(_ width: CGFloat) {
+        guard allowsPiPParameterChange else { return }
+        overlayBorder.width = width.clamped(to: 0...OverlayBorderStyle.maximumWidth)
+        logPiPParameter(AnalyticsValue.pipThickness, overlayBorder.width)
+    }
+
+    /// The preset swatches. `name` is the swatch's own, or `custom` from the
+    /// colour picker — which is the split worth knowing, since seven presets
+    /// exist precisely to make the picker unnecessary.
+    func setOverlayBorderColor(
+        red: Double, green: Double, blue: Double, opacity: Double,
+        name: String = AnalyticsValue.pipColorCustom
+    ) {
+        guard allowsPiPParameterChange else { return }
+        overlayBorder.setColor(red: red, green: green, blue: blue, opacity: opacity)
+        Analytics.log(AnalyticsEvent.pipBorderColorSelected, [
+            AnalyticsParam.name: name,
+            AnalyticsParam.value: opacity,
+        ])
+    }
+
+    func applyOverlayBorderColor(_ color: Color) {
+        guard allowsPiPParameterChange else { return }
+        overlayBorder.apply(color)
+        // Debounced: the system colour picker writes continuously while a finger
+        // is on its wheel.
+        analyticsSettled(
+            AnalyticsEvent.pipBorderColorSelected,
+            key: "pip.\(AnalyticsValue.pipColor)",
+            [
+                AnalyticsParam.name: AnalyticsValue.pipColorCustom,
+                AnalyticsParam.value: overlayBorder.opacity,
+            ]
+        )
+    }
+
+    private func logPiPParameter(_ parameter: String, _ value: CGFloat) {
+        analyticsSettled(AnalyticsEvent.pipParameterChanged, key: "pip.\(parameter)", [
+            AnalyticsParam.parameter: parameter,
+            AnalyticsParam.value: value,
+            AnalyticsParam.layout: configuration.layout.rawValue,
+        ])
+    }
+
+    /// The ungated primitives.
+    ///
+    /// Used by the debug launch overrides and by `conformOverlayToLayout`, both
+    /// of which install a size rather than accept one from the user — the first
+    /// is how the sliders' effect is reviewed at all in a simulator that cannot
+    /// be tapped, and the second is the layout's own preset.
+    private func applyOverlayWidth(_ fraction: CGFloat) {
         let clamped = fraction.clamped(to: OverlayMetrics.widthRange)
         guard clamped != overlayWidthFraction else { return }
         overlayWidthFraction = clamped
     }
 
-    func setOverlayHeight(_ fraction: CGFloat) {
+    private func applyOverlayHeight(_ fraction: CGFloat) {
         let clamped = fraction.clamped(to: OverlayMetrics.heightRange)
         guard clamped != overlayHeightFraction else { return }
         overlayHeightFraction = clamped
@@ -1134,6 +1686,7 @@ final class CameraViewModel {
     /// the width ceiling keep stretching the height, so the overlay would change
     /// shape at the limit instead of simply stopping.
     func scaleOverlay(from base: CGSize, by magnification: CGFloat) {
+        guard allowsPiPParameterChange else { return }
         var scale = min(
             magnification,
             OverlayMetrics.maximumWidthFraction / max(base.width, 0.01),
@@ -1152,6 +1705,60 @@ final class CameraViewModel {
         if abs(scale - magnification) > 0.001 { HapticEngine.shared.resizeLimit() }
         overlayWidthFraction = width
         overlayHeightFraction = height
+
+        // The pinch and the two sliders reach the same numbers by different
+        // routes, and which route people use decides whether the parameter sheet
+        // is worth its place in Settings. Separate event, same debounce.
+        analyticsSettled(AnalyticsEvent.overlayPinchResized, key: "pip.pinch", [
+            AnalyticsParam.widthFraction: width,
+            AnalyticsParam.heightFraction: height,
+            AnalyticsParam.layout: configuration.layout.rawValue,
+        ])
+    }
+}
+
+// MARK: - Analytics
+
+extension CameraViewModel {
+    /// The shape of the capture, as every camera event reports it.
+    ///
+    /// One helper rather than seven literals per call site: `recording_started`
+    /// and `photo_captured` have to be comparable on the same axes, and they only
+    /// are if both spell the axes identically. Quality is read from
+    /// `negotiatedQuality` — what the hardware granted — because what was
+    /// *requested* is not what got recorded.
+    var analyticsCaptureShape: [String: Any] {
+        [
+            AnalyticsParam.mode: configuration.mode.rawValue,
+            AnalyticsParam.layout: configuration.layout.rawValue,
+            AnalyticsParam.aspectRatio: configuration.aspectRatio.rawValue,
+            AnalyticsParam.resolution: negotiatedQuality.resolution.rawValue,
+            AnalyticsParam.frameRate: negotiatedQuality.frameRate.rawValue,
+            AnalyticsParam.primarySource: configuration.primarySource.rawValue,
+            AnalyticsParam.secondarySource: configuration.secondarySource?.rawValue ?? "none",
+        ]
+    }
+
+    func analyticsEvent(_ event: String, _ parameters: [String: Any] = [:]) {
+        Analytics.log(event, analyticsCaptureShape.merging(parameters) { _, new in new })
+    }
+
+    /// Logs the value a control *settled* on, not every value it passed through.
+    ///
+    /// Sliders and pinches deliver a change per display frame. Logged directly,
+    /// one drag of the width slider is a hundred and twenty events describing a
+    /// number nobody chose — it floods the quota, and the histogram it builds is
+    /// of the journey rather than of the destination. Each key keeps its own
+    /// pending task, so moving width and then height records both rather than
+    /// letting the second cancel the first.
+    func analyticsSettled(_ event: String, key: String, _ parameters: [String: Any]) {
+        pendingSettledLogs[key]?.cancel()
+        pendingSettledLogs[key] = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            Analytics.log(event, parameters)
+            self?.pendingSettledLogs[key] = nil
+        }
     }
 }
 
